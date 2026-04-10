@@ -125,6 +125,73 @@ class KisClient:
 
         raise RuntimeError(f"KIS 현재가 조회 실패 ({code}): {last_err}")
 
+    def get_stock_name(self, code: str, max_retries: int = 3) -> str:
+        """종목코드로 한국어 종목명을 조회한다.
+
+        `inquire-price` 응답에는 종목명이 없어서(업종명 bstp_kor_isnm 만 내려옴)
+        별도의 `search-stock-info` 엔드포인트(TR_ID CTPF1604R)를 쓴다.
+        약식명(`prdt_abrv_name`, 예: "기아") 을 우선 반환하고, 없으면 정식명
+        (`prdt_name`, 예: "기아보통주") 으로 폴백한다.
+        """
+        cfg = self.quote_cfg
+        tr_id = "CTPF1604R"
+        params = {
+            "PRDT_TYPE_CD": "300",  # 300 = 국내주식
+            "PDNO": code,
+        }
+
+        attempt = 0
+        last_err = ""
+        while attempt < max_retries:
+            attempt += 1
+            self._throttle(cfg)
+            resp = self._quote_client.get(
+                "/uapi/domestic-stock/v1/quotations/search-stock-info",
+                params=params,
+                headers=self._headers(cfg, tr_id),
+            )
+
+            body: dict[str, Any] | None
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+
+            if resp.status_code == 200 and body and body.get("rt_cd") == "0":
+                output = body.get("output") or {}
+                name = (
+                    str(output.get("prdt_abrv_name") or "").strip()
+                    or str(output.get("prdt_name") or "").strip()
+                )
+                if name:
+                    return name
+                last_err = "output 에 종목명이 비어 있음"
+                break
+
+            msg = (body or {}).get("msg1") if body else resp.text[:200]
+            msg_cd = (body or {}).get("msg_cd") if body else ""
+            last_err = f"status={resp.status_code} msg_cd={msg_cd} msg1={msg}"
+
+            is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
+            if is_rate_limit and attempt < max_retries:
+                backoff = 0.5 * attempt
+                log.warning(
+                    "종목명 조회 rate limit (%s), %.1f초 대기 후 재시도 %d/%d",
+                    code, backoff, attempt, max_retries,
+                )
+                time.sleep(backoff)
+                continue
+            if resp.status_code >= 500 and attempt < max_retries:
+                log.warning(
+                    "종목명 조회 서버 오류 (%s) %s, 재시도 %d/%d",
+                    code, last_err, attempt, max_retries,
+                )
+                time.sleep(0.3 * attempt)
+                continue
+            break
+
+        raise RuntimeError(f"KIS 종목명 조회 실패 ({code}): {last_err}")
+
     def get_daily_ohlcv(self, code: str, days: int = 30, max_retries: int = 3) -> list[dict[str, Any]]:
         """최근 N 영업일의 일봉 OHLCV. 결과는 오래된 순 → 최신 순 정렬.
 

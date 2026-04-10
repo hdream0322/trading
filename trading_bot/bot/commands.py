@@ -508,24 +508,19 @@ def _universe_add_preview(ctx: BotContext, code: str) -> dict[str, Any]:
                 f"`/universe` 로 전체 목록을 볼 수 있어요."
             )
     try:
-        output = ctx.kis.get_price(code)
+        name = ctx.kis.get_stock_name(code)
     except Exception as exc:
         return _reply(
             f"❌ 종목 조회 실패\n`{exc}`\n\n"
             f"종목코드 `{code}` 가 정확한지 확인하세요."
         )
-    name = str(output.get("hts_kor_isnm") or "").strip()
-    if not name:
-        return _reply(
-            f"❌ `{code}` 의 종목명을 가져올 수 없습니다.\n"
-            f"종목코드를 다시 확인해 주세요."
-        )
     price_line = ""
     try:
-        price = int(output.get("stck_prpr") or 0)
+        price_output = ctx.kis.get_price(code)
+        price = int(price_output.get("stck_prpr") or 0)
         if price > 0:
             price_line = f"\n지금 가격: `{price:,}원`"
-    except (ValueError, TypeError):
+    except Exception:
         pass
     text = (
         f"*종목 추가 확인*\n\n"
@@ -570,12 +565,9 @@ def _execute_universe_add(ctx: BotContext, code: str) -> dict[str, Any]:
         if item["code"] == code:
             return _reply(f"ℹ️ *{item['name']}* (`{code}`) 는 이미 추적 중입니다")
     try:
-        output = ctx.kis.get_price(code)
+        name = ctx.kis.get_stock_name(code)
     except Exception as exc:
         return _reply(f"❌ 종목 조회 실패\n`{exc}`")
-    name = str(output.get("hts_kor_isnm") or "").strip()
-    if not name:
-        return _reply(f"❌ `{code}` 의 종목명을 가져올 수 없습니다")
     new_universe = list(ctx.settings.universe) + [{"code": code, "name": name}]
     try:
         save_universe_override(new_universe)
