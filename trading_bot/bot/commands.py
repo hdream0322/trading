@@ -941,39 +941,86 @@ def _apply_update(ctx: BotContext) -> dict[str, Any]:
     current_version = bot_version
 
     # 선행 체크: 이미 최신이면 Watchtower 호출 자체를 건너뛴다.
-    # 이렇게 해야 불필요한 Watchtower 알림("1 Scanned, 0 Updated") 이 안 뜨고
-    # 봇의 응답 한 줄로 깔끔하게 마무리된다.
     try:
         has_update, _, _ = update_manager.check_for_update()
     except Exception as exc:
         log.warning("digest 비교 실패, Watchtower 에 맡김: %s", exc)
-        has_update = True  # 확실치 않으면 일단 호출
+        has_update = True
 
     if not has_update:
         return _reply(f"✅ 현재 최신 버전입니다 (`{current_version}`)")
 
-    # 실제 업데이트 필요 → Watchtower 호출
-    latest_version: str | None = None
+    # 릴리스 정보 (버전 + 태그 메시지) 조회 — 실패해도 업데이트는 진행
+    info: dict[str, str] | None = None
     try:
-        latest_version = update_manager.fetch_latest_release_version()
-    except Exception:
-        pass
+        info = update_manager.fetch_latest_release_info()
+    except Exception as exc:
+        log.warning("릴리스 정보 조회 실패: %s", exc)
 
     try:
         update_manager.trigger_update(token)
     except Exception as exc:
         return _reply(f"❌ *업데이트 요청 실패*\n`{exc}`")
 
+    latest_version = (info or {}).get("tag") or "?"
     lines = [
-        "🔄 *업데이트 요청 전송됨*",
+        "🔄 *업데이트 중...*",
+        "_잠시만 기다려주세요_",
         "",
-        f"현재 버전: `{current_version}`",
-        f"최신 버전: `{latest_version or '?'}`",
-        "",
-        "Watchtower 가 새 이미지를 내려받고 봇을 재시작합니다.",
-        "약 30~60초 후 *봇 기동* 메시지가 도착하면 완료입니다.",
+        f"📦 `{current_version}` → `{latest_version}`",
+        "⏳ 약 30~60초 후 자동으로 재시작됩니다.",
     ]
+
+    summary = _summarize_release_body((info or {}).get("body") or "")
+    if summary:
+        lines.append("")
+        lines.append("📋 *이번 변경 사항*")
+        lines.append("```")
+        lines.append(summary)
+        lines.append("```")
+
     return _reply("\n".join(lines))
+
+
+def _summarize_release_body(body: str, max_chars: int = 1500) -> str:
+    """릴리스 바디/태그 메시지에서 사용자에게 보여줄 요약만 추출.
+
+    - `---` 구분선 또는 `## Docker` / `## 배포` / `## NAS` 헤딩이 나오면 거기서 자름
+    - 연속된 빈 줄은 하나로 압축
+    - 트리플 백틱은 Telegram pre block 과 충돌하므로 작은따옴표 3개로 치환
+    - `max_chars` 를 넘으면 뒤를 자르고 안내 문구 추가
+    """
+    if not body:
+        return ""
+    lines = body.splitlines()
+    kept: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "---":
+            break
+        if stripped.startswith("## ") and (
+            "Docker" in stripped or "배포" in stripped or "NAS" in stripped
+        ):
+            break
+        # 커밋 메타데이터 (Co-Authored-By, Signed-off-by 등) 는 사용자에게 노이즈
+        if stripped.lower().startswith(("co-authored-by:", "signed-off-by:")):
+            continue
+        kept.append(line)
+
+    compact: list[str] = []
+    prev_blank = False
+    for line in kept:
+        blank = not line.strip()
+        if blank and prev_blank:
+            continue
+        compact.append(line)
+        prev_blank = blank
+
+    text = "\n".join(compact).strip()
+    text = text.replace("```", "'''")  # Telegram pre block 안전
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "\n\n… (전체 내용은 GitHub Release 페이지 참고)"
+    return text
 
 
 def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:

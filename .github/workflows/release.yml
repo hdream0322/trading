@@ -20,38 +20,44 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # generate_release_notes가 이전 태그까지 비교하려면 필요
+          fetch-depth: 0  # 태그 annotation + 이전 태그 비교용
+
+      - name: Build release body from tag annotation
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          # 태그를 찍을 때 -m 으로 넣은 한국어 요약을 릴리스 바디 최상단에 배치.
+          # 이렇게 해야 봇의 /update confirm 에서 보여주는 릴리스 노트와
+          # GitHub Release 페이지가 같은 내용을 공유한다.
+          TAG_BODY=$(git tag -l --format='%(contents)' "$TAG_NAME")
+          {
+            echo "$TAG_BODY"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Docker 이미지"
+            echo ""
+            echo "이 릴리스는 자동으로 GHCR에 Docker 이미지로 발행됩니다."
+            echo ""
+            echo '```'
+            echo "ghcr.io/hdream0322/trading:$TAG_NAME"
+            echo "ghcr.io/hdream0322/trading:latest"
+            echo '```'
+            echo ""
+            echo "## 배포 (NAS)"
+            echo ""
+            echo "**최신 버전으로 업데이트**"
+            echo ""
+            echo '```bash'
+            echo "cd /volume1/docker/trading"
+            echo "sudo docker compose pull"
+            echo "sudo docker compose up -d"
+            echo '```'
+          } > release_body.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          generate_release_notes: true
-          body: |
-            ## Docker 이미지
-
-            이 릴리스는 자동으로 GHCR에 Docker 이미지로 발행됩니다.
-
-            ```
-            ghcr.io/hdream0322/trading:${{ github.ref_name }}
-            ghcr.io/hdream0322/trading:latest
-            ```
-
-            ## 배포 (NAS)
-
-            **최신 버전으로 업데이트**
-            ```bash
-            cd /volume1/docker/trading
-            sudo docker compose pull
-            sudo docker compose up -d
-            ```
-
-            **이 특정 버전으로 고정**
-
-            `docker-compose.yml`에서 `image:` 라인을 수정:
-            ```yaml
-            image: ghcr.io/hdream0322/trading:${{ github.ref_name }}
-            ```
-            후 `sudo docker compose up -d`
-
-            ---
+          body_path: release_body.md

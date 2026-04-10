@@ -20,6 +20,8 @@ WATCHTOWER_UPDATE_URL = "http://watchtower:8080/v1/update"
 GHCR_TOKEN_URL = "https://ghcr.io/token?service=ghcr.io&scope=repository:hdream0322/trading:pull"
 GHCR_MANIFEST_URL = "https://ghcr.io/v2/hdream0322/trading/manifests/latest"
 GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/hdream0322/trading/releases/latest"
+GITHUB_TAG_REF_URL = "https://api.github.com/repos/hdream0322/trading/git/refs/tags/{tag}"
+GITHUB_TAG_OBJECT_URL = "https://api.github.com/repos/hdream0322/trading/git/tags/{sha}"
 _MANIFEST_ACCEPT = ", ".join([
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.oci.image.index.v1+json",
@@ -153,15 +155,64 @@ def fetch_latest_release_version(timeout: float = 10.0) -> str:
 
     반환 예시: '0.2.7'  ('v' prefix 는 제거)
     """
+    info = fetch_latest_release_info(timeout=timeout)
+    return info["tag"]
+
+
+def fetch_latest_release_info(timeout: float = 10.0) -> dict[str, str]:
+    """최신 릴리스의 버전 + 태그 annotation 메시지 + 링크 조회.
+
+    반환 dict 키:
+      - tag: 'v' prefix 제거된 버전 문자열 (예: '0.2.9')
+      - raw_tag: 원본 태그 이름 (예: 'v0.2.9')
+      - body: annotated tag 의 message (태그 찍을 때 `-m` 으로 쓴 한국어 요약).
+              lightweight tag 이거나 조회 실패 시 빈 문자열.
+      - html_url: 릴리스 페이지 URL
+
+    releases API 의 `body` 필드는 릴리스 바디(워크플로우가 채움)라 태그 메시지와
+    다를 수 있다. 태그 메시지를 직접 원하므로 Git Data API 를 별도로 호출한다.
+    """
     resp = httpx.get(GITHUB_LATEST_RELEASE_URL, timeout=timeout)
     if resp.status_code == 404:
         raise RuntimeError("아직 생성된 GitHub Release 가 없습니다")
     resp.raise_for_status()
     data = resp.json()
-    tag = str(data.get("tag_name", "")).strip()
-    if not tag:
+    raw_tag = str(data.get("tag_name", "")).strip()
+    if not raw_tag:
         raise RuntimeError("GitHub API 응답에 tag_name 없음")
-    return tag.lstrip("vV")
+    tag = raw_tag.lstrip("vV")
+    html_url = str(data.get("html_url", "")).strip()
+    tag_body = _fetch_tag_annotation(raw_tag, timeout=timeout)
+    return {"tag": tag, "raw_tag": raw_tag, "body": tag_body, "html_url": html_url}
+
+
+def _fetch_tag_annotation(tag_name: str, timeout: float = 10.0) -> str:
+    """annotated git tag 의 message 를 GitHub Git Data API 로 조회.
+
+    2-step 호출:
+      1. /git/refs/tags/<tag> → tag object SHA
+      2. /git/tags/<sha> → message
+
+    lightweight tag 는 step 1 의 object type 이 'commit' 이라 early return.
+    네트워크/권한 실패는 조용히 빈 문자열 반환 (호출 측에서 폴백).
+    """
+    try:
+        resp = httpx.get(GITHUB_TAG_REF_URL.format(tag=tag_name), timeout=timeout)
+        if resp.status_code != 200:
+            return ""
+        obj = resp.json().get("object", {})
+        if obj.get("type") != "tag":
+            return ""
+        sha = obj.get("sha", "")
+        if not sha:
+            return ""
+        resp = httpx.get(GITHUB_TAG_OBJECT_URL.format(sha=sha), timeout=timeout)
+        if resp.status_code != 200:
+            return ""
+        return str(resp.json().get("message", "")).strip()
+    except Exception as exc:
+        log.warning("태그 annotation 조회 실패 (%s): %s", tag_name, exc)
+        return ""
 
 
 def trigger_update(token: str) -> dict[str, object]:
