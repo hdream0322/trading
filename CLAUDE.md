@@ -118,8 +118,6 @@ python3 -m compileall -q trading_bot/
 - `/update` — 현재/최신 버전 비교
 - `/update confirm` — 최신 버전으로 실제 업데이트 실행 (Watchtower)
 - `/update notes [버전]` — 지금 버전 또는 특정 버전의 릴리스 노트
-- `/update to 0.2.9` — 특정 버전으로 전환 (다운그레이드 포함, SSH 명령어 안내)
-- `/update to latest` — 다시 `:latest` 로 복귀 안내
 - `/update enable` / `disable` / `status` — 자동 업데이트 토글
 
 **자격증명**
