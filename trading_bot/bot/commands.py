@@ -41,7 +41,6 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("mode", "거래 모드 조회/전환 (실전/모의)"),
     ("universe", "추적 종목 목록/추가/제거"),
     ("about", "봇 버전 및 전체 설정"),
-    ("notes", "지금 버전 릴리스 노트 (또는 /notes 0.2.9)"),
     ("stop", "🛑 긴급 정지 (새로 구매 차단)"),
     ("resume", "✅ 긴급 정지 풀기"),
     ("sell", "특정 종목 전부 팔기 (확인 필요)"),
@@ -261,8 +260,6 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /universe remove — 종목 제거 (버튼으로 선택)
 /universe remove 005490 — 코드 직접 지정 제거
 /about — 봇 버전, 가동 시간, 전체 설정 요약
-/notes — 지금 실행 중인 버전의 릴리스 노트
-/notes 0.2.9 — 특정 버전의 릴리스 노트
 
 *⚙️ 조작*
 /stop — 🛑 긴급 정지 (새로 구매 안 함)
@@ -823,14 +820,18 @@ def cmd_cycle(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 
 def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
-    """봇 업데이트 조작 (2단계 확인 플로우).
+    """봇 업데이트 조작 (여러 서브커맨드).
 
     사용법:
-      /update              — 현재/최신 버전 표시 + 업데이트 필요 여부 안내
-      /update confirm      — 실제 업데이트 실행 (Watchtower 호출)
-      /update enable       — 자동 업데이트 켜기
-      /update disable      — 자동 업데이트 끄기
-      /update status       — 자동 업데이트 상태 확인
+      /update                 — 현재/최신 버전 표시 + 업데이트 필요 여부 안내
+      /update confirm         — 최신 버전으로 업데이트 실행 (Watchtower 호출)
+      /update notes           — 지금 버전의 릴리스 노트 보기
+      /update notes 0.2.9     — 특정 버전의 릴리스 노트 보기
+      /update to 0.2.9        — 특정 버전으로 전환 (다운그레이드 포함, SSH 안내)
+      /update to latest       — 다시 최신 (`:latest`) 으로 복귀 안내
+      /update enable          — 자동 업데이트 켜기
+      /update disable         — 자동 업데이트 끄기
+      /update status          — 자동 업데이트 상태 확인
     """
     if not args:
         return _check_update(ctx)
@@ -838,6 +839,16 @@ def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     sub = args[0].lower()
     if sub == "confirm":
         return _apply_update(ctx)
+    if sub == "notes" or sub == "note":
+        return cmd_notes(ctx, args[1:])
+    if sub == "to":
+        if len(args) < 2:
+            return _reply(
+                "사용법:\n"
+                "`/update to 0.2.9` — 특정 버전으로 전환\n"
+                "`/update to latest` — 다시 최신으로 복귀"
+            )
+        return _update_to_version(ctx, args[1].strip())
     if sub == "enable":
         update_manager.enable_auto()
         return _reply(
@@ -878,8 +889,12 @@ def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
     return _reply(
         "*업데이트 명령어*\n"
-        "`/update` — 현재/최신 버전 확인 (실행 안 함)\n"
-        "`/update confirm` — 실제 업데이트 실행\n"
+        "`/update` — 현재/최신 버전 확인\n"
+        "`/update confirm` — 최신 버전으로 업데이트 실행\n"
+        "`/update notes` — 지금 버전 릴리스 노트\n"
+        "`/update notes 0.2.9` — 특정 버전 릴리스 노트\n"
+        "`/update to 0.2.9` — 특정 버전으로 전환 (다운그레이드 포함)\n"
+        "`/update to latest` — 다시 최신으로 복귀\n"
         "`/update enable` — 자동 업데이트 켜기\n"
         "`/update disable` — 자동 업데이트 끄기\n"
         "`/update status` — 자동 업데이트 상태 확인"
@@ -981,6 +996,104 @@ def _apply_update(ctx: BotContext) -> dict[str, Any]:
         lines.append("```")
         lines.append(summary)
         lines.append("```")
+
+    return _reply("\n".join(lines))
+
+
+def _update_to_version(ctx: BotContext, target: str) -> dict[str, Any]:
+    """/update to VERSION — docker-compose.yml image 태그 변경 안내.
+
+    Watchtower 구조에서는 봇이 자체적으로 컨테이너를 교체할 수 없어서
+    (docker.sock 마운트가 필요한데 위험/복잡함), 사용자에게 복사-붙여넣기
+    가능한 sed + docker compose 명령어를 안내하는 방식을 쓴다.
+
+    이 방식의 장점:
+    - image 태그가 `:v0.2.9` 로 바뀌면 Watchtower 가 더 이상 업데이트 안 함
+      (GHCR 의 `:v0.2.9` 는 불변이라 항상 같은 digest). 자동 고정 효과.
+    - `/update to latest` 로 다시 복귀 가능.
+    """
+    target_lower = target.lower().lstrip("vV")
+
+    if target_lower == "latest":
+        image_tag = "latest"
+        tag_name = None
+        preview_lines: list[str] = []
+        title = "📌 *최신 버전 (`:latest`) 으로 복귀*"
+        desc = (
+            "다시 최신 버전을 자동으로 따라가도록 되돌립니다.\n"
+            "Watchtower 가 주기적으로 새 버전을 가져오게 됩니다."
+        )
+    else:
+        # 6자리 숫자 뿐 아니라 0.2.9 / v0.2.9 같은 버전 문자열 수용
+        if not target_lower or not any(ch.isdigit() for ch in target_lower):
+            return _reply(
+                f"❌ 잘못된 버전 형식: `{target}`\n"
+                f"예: `/update to 0.2.9` 또는 `/update to latest`"
+            )
+        tag_name = f"v{target_lower}"
+        image_tag = tag_name
+        # GitHub 에서 태그 존재 여부 + annotation 조회
+        try:
+            body = update_manager.fetch_tag_annotation(tag_name)
+        except Exception as exc:
+            log.warning("태그 annotation 조회 실패: %s", exc)
+            body = ""
+        if not body:
+            return _reply(
+                f"❌ `{tag_name}` 태그를 찾을 수 없습니다.\n\n"
+                f"GitHub 에서 공개된 버전만 전환 가능해요:\n"
+                f"github.com/hdream0322/trading/releases"
+            )
+        # 미리보기: 첫 줄 + 요약 일부
+        summary = _summarize_release_body(body, max_chars=600)
+        preview_lines = summary.splitlines() if summary else []
+        title = f"📌 *`{tag_name}` 로 전환*"
+        desc = (
+            "이 버전으로 컨테이너를 다시 생성합니다.\n"
+            "Watchtower 는 고정 태그를 건드리지 않으므로 자동으로 풀리지 않아요."
+        )
+
+    current_version = bot_version
+    lines = [
+        title,
+        "",
+        f"현재: `{current_version}`",
+    ]
+    if tag_name:
+        lines.append(f"대상: `{tag_name}`")
+    lines.append("")
+    lines.append(desc)
+
+    if preview_lines:
+        lines.append("")
+        lines.append("📋 *이 버전의 변경 사항*")
+        lines.append("```")
+        # 너무 길면 앞 8줄만
+        for ln in preview_lines[:8]:
+            lines.append(ln)
+        if len(preview_lines) > 8:
+            lines.append("…")
+        lines.append("```")
+
+    lines.append("")
+    lines.append("*NAS SSH 에서 아래 명령어를 복사해 붙여넣으세요.*")
+    lines.append("```")
+    lines.append("cd /volume1/docker/trading")
+    lines.append("sudo cp docker-compose.yml docker-compose.yml.bak")
+    lines.append(
+        "sudo sed -i "
+        f"'s|ghcr.io/hdream0322/trading:[^\"[:space:]]*|ghcr.io/hdream0322/trading:{image_tag}|' "
+        "docker-compose.yml"
+    )
+    lines.append("sudo docker compose up -d trading-bot")
+    lines.append("```")
+    lines.append("")
+    lines.append("완료되면 *봇 기동* 메시지가 텔레그램으로 도착합니다.")
+    lines.append("")
+    lines.append(
+        "_문제 생기면 백업으로 복구:_\n"
+        "_`sudo cp docker-compose.yml.bak docker-compose.yml && sudo docker compose up -d trading-bot`_"
+    )
 
     return _reply("\n".join(lines))
 
@@ -1445,8 +1558,6 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/help": cmd_help,
     "/menu": cmd_menu,
     "/about": cmd_about,
-    "/notes": cmd_notes,
-    "/changelog": cmd_notes,
     "/mode": cmd_mode,
     "/universe": cmd_universe,
     "/status": cmd_status,

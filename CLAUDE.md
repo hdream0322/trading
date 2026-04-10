@@ -96,14 +96,13 @@ python3 -m compileall -q trading_bot/
 | `paper_account_issued` | 모의 계좌 사용 시작 시각 (90일 만료 카운트다운) | `bot/expiry.py`, `/reload`, `/setcreds paper` |
 | `universe.json` | 추적 종목 런타임 오버라이드 | `/universe add`, `/universe remove` |
 
-## 텔레그램 커맨드 (18개)
+## 텔레그램 커맨드 (17개)
 
 **시작**
 - `/menu`, `/start` — 메인 허브 (자주 쓰는 동작을 버튼 하나로)
 
 **조회**
 - `/help`, `/status`, `/positions`, `/signals`, `/cost`, `/mode`, `/universe`, `/about`
-- `/notes` — 지금 버전 릴리스 노트 (또는 `/notes 0.2.9` 로 특정 버전)
 
 **조작**
 - `/stop`, `/resume` — 킬 스위치 토글
@@ -117,7 +116,10 @@ python3 -m compileall -q trading_bot/
 
 **업데이트**
 - `/update` — 현재/최신 버전 비교
-- `/update confirm` — 실제 업데이트 실행 (이미 최신이면 한 줄 응답, Watchtower 호출 생략)
+- `/update confirm` — 최신 버전으로 실제 업데이트 실행 (Watchtower)
+- `/update notes [버전]` — 지금 버전 또는 특정 버전의 릴리스 노트
+- `/update to 0.2.9` — 특정 버전으로 전환 (다운그레이드 포함, SSH 명령어 안내)
+- `/update to latest` — 다시 `:latest` 로 복귀 안내
 - `/update enable` / `disable` / `status` — 자동 업데이트 토글
 
 **자격증명**

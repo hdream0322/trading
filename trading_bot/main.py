@@ -275,13 +275,29 @@ def main() -> int:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    badge = "🔴 실전" if settings.kis.mode == "live" else "🟡 모의"
-    kill_note = " · ⚠️ 긴급 정지 켜짐" if kill_switch.is_active() else ""
+    mode_line = (
+        "🔴 *실전 계좌* 로 동작 중이에요 — 실제 돈이 움직입니다."
+        if settings.kis.mode == "live"
+        else "🟡 *모의 계좌* 로 동작 중이에요."
+    )
+    if kill_switch.is_active():
+        action_line = (
+            f"⏰ 평일 09–15시, {settings.cycle_minutes}분마다 신호를 확인해요.\n"
+            f"🛑 긴급 정지가 켜져 있어서 새로 구매는 안 하지만, 갖고 있는 주식의 "
+            f"자동 판매(손절/익절)는 계속 동작해요."
+        )
+    else:
+        action_line = (
+            f"⏰ 평일 09–15시, {settings.cycle_minutes}분마다 신호를 확인하고 "
+            f"조건이 맞으면 자동으로 거래해요."
+        )
     telegram.send(
         settings.telegram,
         (
-            f"*봇 기동* {badge} — 점검 {settings.cycle_minutes}분 주기 (평일 09–15시){kill_note}\n"
-            f"텔레그램 명령어 활성. `/help` 로 사용법 확인."
+            "✅ *정상적으로 시작되었습니다!*\n\n"
+            f"{mode_line}\n"
+            f"{action_line}\n\n"
+            "명령어: `/menu` 또는 `/help`"
         ),
     )
     log.info("Scheduler 시작 (매 %d분)", settings.cycle_minutes)
