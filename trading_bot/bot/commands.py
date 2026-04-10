@@ -16,6 +16,7 @@ from trading_bot.config import (
     KisConfig,
     build_trade_cfg,
     load_credentials_override,
+    save_universe_override,
 )
 from trading_bot.kis.client import KisClient
 from trading_bot.risk import kill_switch
@@ -31,13 +32,14 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
+    ("menu", "메인 메뉴 (버튼 허브)"),
     ("help", "사용법 보기"),
     ("status", "지금 상태 (자산·킬스위치·비용)"),
     ("positions", "갖고 있는 주식"),
     ("signals", "오늘 매매 추천 (최근 10개)"),
     ("cost", "오늘 AI 분석 비용"),
     ("mode", "거래 모드 조회/전환 (실전/모의)"),
-    ("universe", "추적 중인 종목 목록"),
+    ("universe", "추적 종목 목록/추가/제거"),
     ("about", "봇 버전 및 전체 설정"),
     ("stop", "🛑 긴급 정지 (새로 구매 차단)"),
     ("resume", "✅ 긴급 정지 풀기"),
@@ -130,6 +132,90 @@ def cycle_summary_keyboard() -> dict[str, Any]:
                 {"text": "📊 내 주식", "callback_data": "positions"},
                 {"text": "💰 상태", "callback_data": "status"},
             ],
+            [
+                {"text": "🔄 지금 점검", "callback_data": "cycle_run"},
+            ],
+        ]
+    }
+
+
+def _sell_picker_keyboard(holdings: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """보유 종목을 각각 버튼으로 만들어 판매 대상 선택 화면."""
+    rows: list[list[dict[str, str]]] = []
+    for code, p in holdings.items():
+        qty = int(p["qty"])
+        pnl_pct = float(p["pnl_pct"])
+        rows.append([{
+            "text": f"{p['name']} {qty}주 ({pnl_pct:+.1f}%)",
+            "callback_data": f"sell_select:{code}",
+        }])
+    rows.append([{"text": "❌ 취소", "callback_data": "cancel"}])
+    return {"inline_keyboard": rows}
+
+
+def _positions_sell_keyboard(holdings: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """/positions 응답 하단에 붙는 종목별 판매 버튼."""
+    rows: list[list[dict[str, str]]] = []
+    for code, p in holdings.items():
+        rows.append([{
+            "text": f"💸 {p['name']} 판매",
+            "callback_data": f"sell_select:{code}",
+        }])
+    return {"inline_keyboard": rows}
+
+
+def _universe_remove_picker_keyboard(universe: list[dict[str, str]]) -> dict[str, Any]:
+    """/universe remove (인자 없음) → 추적 종목 각각을 제거 버튼으로."""
+    rows: list[list[dict[str, str]]] = []
+    for item in universe:
+        rows.append([{
+            "text": f"❌ {item['name']}",
+            "callback_data": f"universe_rm_pick:{item['code']}",
+        }])
+    rows.append([{"text": "취소", "callback_data": "cancel"}])
+    return {"inline_keyboard": rows}
+
+
+def _mode_switch_keyboard(current_mode: str) -> dict[str, Any]:
+    """/mode (인자 없음) → 반대 모드로 전환 버튼."""
+    if current_mode == "paper":
+        btn = {"text": "🔴 실전으로 전환", "callback_data": "mode_to:live"}
+    else:
+        btn = {"text": "🟡 모의로 전환", "callback_data": "mode_to:paper"}
+    return {"inline_keyboard": [[btn]]}
+
+
+def _mode_live_confirm_keyboard() -> dict[str, Any]:
+    """실전 전환 경고 화면에 붙는 확정/취소 버튼."""
+    return {
+        "inline_keyboard": [[
+            {"text": "🚨 실전 전환 확정", "callback_data": "mode_confirm_live"},
+            {"text": "❌ 취소", "callback_data": "cancel"},
+        ]]
+    }
+
+
+def _menu_keyboard(kill_active: bool) -> dict[str, Any]:
+    """/menu 허브 버튼."""
+    third_row = (
+        [{"text": "✅ 긴급정지 풀기", "callback_data": "resume"},
+         {"text": "ℹ️ 사용법", "callback_data": "help"}]
+        if kill_active
+        else
+        [{"text": "🛑 긴급 정지", "callback_data": "kill"},
+         {"text": "ℹ️ 사용법", "callback_data": "help"}]
+    )
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "💰 상태", "callback_data": "status"},
+                {"text": "📊 내 주식", "callback_data": "positions"},
+            ],
+            [
+                {"text": "🌐 종목 목록", "callback_data": "universe_list"},
+                {"text": "🔄 지금 점검", "callback_data": "cycle_run"},
+            ],
+            third_row,
         ]
     }
 
@@ -143,25 +229,43 @@ def _sell_confirm_keyboard(code: str, name: str, qty: int) -> dict[str, Any]:
     }
 
 
+def _universe_confirm_keyboard(action: str, code: str) -> dict[str, Any]:
+    """action: 'add' 또는 'remove'."""
+    verb = "추가" if action == "add" else "제거"
+    return {
+        "inline_keyboard": [[
+            {"text": f"✅ 예, {verb}할게요", "callback_data": f"universe_{action}:{code}"},
+            {"text": "❌ 아니요", "callback_data": "cancel"},
+        ]]
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # 커맨드 핸들러
 # ─────────────────────────────────────────────────────────────
 
 HELP_TEXT = """*자동매매 봇 사용법*
 
+*🏠 시작*
+/menu — 메인 메뉴 (자주 쓰는 동작을 버튼으로)
+
 *📊 조회*
 /status — 지금 상태 (모드, 총 자산, 긴급정지, AI 비용)
-/positions — 갖고 있는 주식 상세
+/positions — 갖고 있는 주식 + 판매 버튼
 /signals — 오늘 나온 매매 추천 (최근 10개)
 /cost — 오늘 AI 분석 비용
-/mode — 거래 모드 조회 및 전환 (실전/모의)
+/mode — 거래 모드 조회 (전환 버튼 있음)
 /universe — 추적 중인 종목 목록
+/universe add 005490 — 종목 추가 (이름 확인 후 예/아니오)
+/universe remove — 종목 제거 (버튼으로 선택)
+/universe remove 005490 — 코드 직접 지정 제거
 /about — 봇 버전, 가동 시간, 전체 설정 요약
 
 *⚙️ 조작*
 /stop — 🛑 긴급 정지 (새로 구매 안 함)
 /resume — ✅ 긴급 정지 풀기
-/sell 005930 — 특정 종목 전부 팔기 (한 번 더 확인)
+/sell — 보유 종목 목록에서 선택해 판매
+/sell 005930 — 코드 직접 지정 판매
 /cycle — 지금 바로 점검 한 번 돌리기
 
 *🔄 업데이트*
@@ -257,9 +361,8 @@ def cmd_mode(ctx: BotContext, args: list[str]) -> dict[str, Any]:
             "- 손실은 실제 손실입니다 (복구 불가)\n"
             "- 리스크 매니저가 보호하지만 완벽하지 않습니다\n"
             "- 장 시간(평일 09:00~15:30) 중에는 즉시 영향\n\n"
-            "정말로 실전 전환을 원하면 아래를 입력하세요:\n"
-            "`/mode live confirm`\n\n"
-            "_모의로 돌아가려면 언제든 `/mode paper`._"
+            "정말로 실전 전환을 원하면 아래 버튼을 누르세요.",
+            reply_markup=_mode_live_confirm_keyboard(),
         )
 
     # 실제 전환 수행
@@ -306,11 +409,9 @@ def _show_current_mode(ctx: BotContext) -> dict[str, Any]:
         f"시세 조회: {quote_server}",
         f"계좌: `{s.kis.account_no}-{s.kis.account_product_cd}`",
         "",
-        "*전환*",
-        "`/mode paper` — 모의로 (즉시)",
-        "`/mode live` — 실전 전환 경고 → `/mode live confirm`",
+        "_아래 버튼으로 다른 모드로 전환할 수 있어요._",
     ]
-    return _reply("\n".join(lines))
+    return _reply("\n".join(lines), reply_markup=_mode_switch_keyboard(s.kis.mode))
 
 
 def _swap_kis_mode(ctx: BotContext, new_mode: str, new_cfg: KisConfig) -> None:
@@ -335,11 +436,198 @@ def _swap_kis_mode(ctx: BotContext, new_mode: str, new_cfg: KisConfig) -> None:
 
 
 def cmd_universe(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """추적 종목 목록 조회 및 add/remove 서브커맨드.
+
+    사용법:
+      /universe                    — 현재 목록
+      /universe add 005490         — 종목 추가 (KIS 로 이름 확인 후 예/아니오)
+      /universe remove 005490      — 종목 제거 (예/아니오 확인)
+    """
+    if not args:
+        return _universe_list(ctx)
+    sub = args[0].lower()
+    if sub == "add":
+        if len(args) < 2:
+            return _reply("사용법: `/universe add 005490`\n(종목코드 6자리)")
+        return _universe_add_preview(ctx, args[1].strip())
+    if sub in ("remove", "rm", "del", "delete"):
+        if len(args) < 2:
+            return _universe_remove_picker(ctx)
+        return _universe_remove_preview(ctx, args[1].strip())
+    return _reply(
+        "사용법:\n"
+        "`/universe` — 목록 보기\n"
+        "`/universe add 005490` — 종목 추가\n"
+        "`/universe remove 005490` — 종목 제거"
+    )
+
+
+def _universe_list(ctx: BotContext) -> dict[str, Any]:
     lines = ["*추적 중인 종목*"]
+    if not ctx.settings.universe:
+        lines.append("_(없음)_")
+    else:
+        for item in ctx.settings.universe:
+            lines.append(f"- {item['name']} (`{item['code']}`)")
+    lines.append(f"\n점검 주기: {ctx.settings.cycle_minutes}분")
+    lines.append(
+        "\n추가: `/universe add 005490`\n"
+        "제거: `/universe remove 005490`"
+    )
+    return _reply("\n".join(lines))
+
+
+def _is_valid_stock_code(code: str) -> bool:
+    return len(code) == 6 and code.isdigit()
+
+
+def _universe_remove_picker(ctx: BotContext) -> dict[str, Any]:
+    """/universe remove 인자 없음 → 추적 종목을 버튼으로 나열."""
+    if not ctx.settings.universe:
+        return _reply("추적 중인 종목이 없습니다")
+    lines = ["*제거할 종목을 고르세요*", ""]
     for item in ctx.settings.universe:
         lines.append(f"- {item['name']} (`{item['code']}`)")
-    lines.append(f"\n점검 주기: {ctx.settings.cycle_minutes}분")
-    return _reply("\n".join(lines))
+    return _reply(
+        "\n".join(lines),
+        reply_markup=_universe_remove_picker_keyboard(ctx.settings.universe),
+    )
+
+
+def _universe_add_preview(ctx: BotContext, code: str) -> dict[str, Any]:
+    """종목코드를 받아 KIS 로 이름을 조회하고 예/아니오 확인 버튼을 띄운다."""
+    if not _is_valid_stock_code(code):
+        return _reply(
+            f"❌ 잘못된 종목코드: `{code}`\n"
+            f"6자리 숫자여야 합니다 (예: `005930`)"
+        )
+    for item in ctx.settings.universe:
+        if item["code"] == code:
+            return _reply(
+                f"ℹ️ *{item['name']}* (`{code}`) 는 이미 추적 중입니다\n\n"
+                f"`/universe` 로 전체 목록을 볼 수 있어요."
+            )
+    try:
+        output = ctx.kis.get_price(code)
+    except Exception as exc:
+        return _reply(
+            f"❌ 종목 조회 실패\n`{exc}`\n\n"
+            f"종목코드 `{code}` 가 정확한지 확인하세요."
+        )
+    name = str(output.get("hts_kor_isnm") or "").strip()
+    if not name:
+        return _reply(
+            f"❌ `{code}` 의 종목명을 가져올 수 없습니다.\n"
+            f"종목코드를 다시 확인해 주세요."
+        )
+    price_line = ""
+    try:
+        price = int(output.get("stck_prpr") or 0)
+        if price > 0:
+            price_line = f"\n지금 가격: `{price:,}원`"
+    except (ValueError, TypeError):
+        pass
+    text = (
+        f"*종목 추가 확인*\n\n"
+        f"종목명: *{name}*\n"
+        f"종목코드: `{code}`"
+        f"{price_line}\n\n"
+        f"이 종목을 추적 목록에 추가할까요?"
+    )
+    return _reply(text, reply_markup=_universe_confirm_keyboard("add", code))
+
+
+def _universe_remove_preview(ctx: BotContext, code: str) -> dict[str, Any]:
+    if not _is_valid_stock_code(code):
+        return _reply(
+            f"❌ 잘못된 종목코드: `{code}`\n"
+            f"6자리 숫자여야 합니다"
+        )
+    target: dict[str, str] | None = None
+    for item in ctx.settings.universe:
+        if item["code"] == code:
+            target = item
+            break
+    if target is None:
+        return _reply(
+            f"❌ `{code}` 는 추적 목록에 없습니다\n"
+            f"`/universe` 로 현재 목록을 확인하세요."
+        )
+    text = (
+        f"*종목 제거 확인*\n\n"
+        f"종목명: *{target['name']}*\n"
+        f"종목코드: `{code}`\n\n"
+        f"이 종목을 추적 목록에서 제거할까요?\n\n"
+        f"_이미 갖고 있는 주식이라면 그대로 남으며,_\n"
+        f"_자동 손절/익절 규칙은 계속 적용됩니다._"
+    )
+    return _reply(text, reply_markup=_universe_confirm_keyboard("remove", code))
+
+
+def _execute_universe_add(ctx: BotContext, code: str) -> dict[str, Any]:
+    """확인 버튼 탭 → 실제 추가. 중복/오류는 여기서도 방어."""
+    for item in ctx.settings.universe:
+        if item["code"] == code:
+            return _reply(f"ℹ️ *{item['name']}* (`{code}`) 는 이미 추적 중입니다")
+    try:
+        output = ctx.kis.get_price(code)
+    except Exception as exc:
+        return _reply(f"❌ 종목 조회 실패\n`{exc}`")
+    name = str(output.get("hts_kor_isnm") or "").strip()
+    if not name:
+        return _reply(f"❌ `{code}` 의 종목명을 가져올 수 없습니다")
+    new_universe = list(ctx.settings.universe) + [{"code": code, "name": name}]
+    try:
+        save_universe_override(new_universe)
+    except Exception as exc:
+        log.exception("universe.json 저장 실패")
+        return _reply(f"❌ 저장 실패\n`{exc}`")
+    ctx.settings.universe = new_universe
+    return _reply(
+        f"✅ *추적 목록에 추가됨*\n\n"
+        f"*{name}* (`{code}`)\n\n"
+        f"이제 총 {len(new_universe)}개 종목을 추적합니다.\n"
+        f"다음 점검부터 이 종목도 함께 봅니다."
+    )
+
+
+def _execute_universe_remove(ctx: BotContext, code: str) -> dict[str, Any]:
+    target: dict[str, str] | None = None
+    new_universe: list[dict[str, str]] = []
+    for item in ctx.settings.universe:
+        if item["code"] == code:
+            target = item
+        else:
+            new_universe.append(item)
+    if target is None:
+        return _reply(f"❌ `{code}` 는 이미 추적 목록에 없습니다")
+    try:
+        save_universe_override(new_universe)
+    except Exception as exc:
+        log.exception("universe.json 저장 실패")
+        return _reply(f"❌ 저장 실패\n`{exc}`")
+    ctx.settings.universe = new_universe
+    return _reply(
+        f"✅ *추적 목록에서 제거됨*\n\n"
+        f"*{target['name']}* (`{code}`)\n\n"
+        f"이제 총 {len(new_universe)}개 종목을 추적합니다.\n"
+        f"_이미 갖고 있는 주식이라면 자동 손절/익절은 계속 적용됩니다._"
+    )
+
+
+def cmd_menu(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """자주 쓰는 기능을 버튼 하나로 모은 허브 화면."""
+    kill_active = kill_switch.is_active()
+    kill_line = "🛑 *긴급 정지 켜짐*" if kill_active else "✅ 정상 운영 중"
+    badge = mode_badge(ctx.settings.kis.mode)
+    universe_count = len(ctx.settings.universe)
+    text = (
+        f"*자동매매 봇* {badge}\n"
+        f"{kill_line}\n"
+        f"추적 중인 종목: {universe_count}개\n\n"
+        f"_원하는 동작을 버튼으로 고르세요._"
+    )
+    return _reply(text, reply_markup=_menu_keyboard(kill_active))
 
 
 def cmd_status(ctx: BotContext, args: list[str]) -> dict[str, Any]:
@@ -391,7 +679,8 @@ def cmd_positions(ctx: BotContext, args: list[str]) -> dict[str, Any]:
             f"   {p['qty']}주 · 평균 구매가 {int(p['avg_price']):,}원 · 지금 가격 {int(p['cur_price']):,}원\n"
             f"   지금 평가 {int(p['eval_amount']):,}원 · 손익 {int(p['pnl']):+,}원 ({p['pnl_pct']:+.2f}%)"
         )
-    return _reply("\n".join(lines))
+    lines.append("\n_판매하려면 아래 버튼을 누르세요._")
+    return _reply("\n".join(lines), reply_markup=_positions_sell_keyboard(holdings))
 
 
 def cmd_signals(ctx: BotContext, args: list[str]) -> dict[str, Any]:
@@ -455,26 +744,59 @@ def cmd_resume(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 
 def cmd_sell(ctx: BotContext, args: list[str]) -> dict[str, Any]:
-    if not args:
-        return _reply("사용법: `/sell 종목코드` (예: `/sell 005930`)")
-    code = args[0].strip()
+    """판매 흐름.
+
+    - `/sell` (무인자): 보유 종목 목록을 버튼으로 띄움 → 탭 → 판매 확인
+    - `/sell 005930`: 기존처럼 바로 판매 확인 화면
+    """
     try:
         bal = ctx.kis.get_balance()
     except Exception as exc:
         return _reply(f"❌ 계좌 조회 실패\n`{exc}`")
     holdings = KisClient.normalize_holdings(bal.get("holdings", []))
+
+    if not args:
+        if not holdings:
+            return _reply("갖고 있는 주식이 없습니다")
+        lines = ["*판매할 종목을 고르세요*", ""]
+        for code, p in holdings.items():
+            pnl_emoji = "🟢" if p["pnl"] >= 0 else "🔴"
+            lines.append(
+                f"{pnl_emoji} *{p['name']}* (`{code}`) · "
+                f"{int(p['qty'])}주 · 손익 {p['pnl_pct']:+.2f}%"
+            )
+        return _reply("\n".join(lines), reply_markup=_sell_picker_keyboard(holdings))
+
+    code = args[0].strip()
+    return _build_sell_confirm(holdings, code)
+
+
+def _build_sell_confirm(
+    holdings: dict[str, dict[str, Any]], code: str
+) -> dict[str, Any]:
+    """holdings 맵에서 code 를 찾아 판매 확인 화면을 만든다 (재사용 헬퍼)."""
     if code not in holdings:
         return _reply(f"`{code}` 종목은 갖고 있지 않습니다")
     p = holdings[code]
     text = (
         f"*판매 확인 필요*\n"
         f"{p['name']} (`{code}`)\n"
-        f"수량: *{p['qty']}주*\n"
+        f"수량: *{int(p['qty'])}주*\n"
         f"평균 구매가 {int(p['avg_price']):,}원 · 지금 가격 {int(p['cur_price']):,}원\n"
         f"손익 {int(p['pnl']):+,}원 ({p['pnl_pct']:+.2f}%)\n\n"
         f"_아래 버튼을 누르면 전량 판매됩니다._"
     )
-    return _reply(text, reply_markup=_sell_confirm_keyboard(code, p["name"], p["qty"]))
+    return _reply(text, reply_markup=_sell_confirm_keyboard(code, p["name"], int(p["qty"])))
+
+
+def _sell_select(ctx: BotContext, code: str) -> dict[str, Any]:
+    """콜백 sell_select: 선택된 코드 → 판매 확인 화면 (잔고 재조회)."""
+    try:
+        bal = ctx.kis.get_balance()
+    except Exception as exc:
+        return _reply(f"❌ 계좌 조회 실패\n`{exc}`")
+    holdings = KisClient.normalize_holdings(bal.get("holdings", []))
+    return _build_sell_confirm(holdings, code)
 
 
 def cmd_cycle(ctx: BotContext, args: list[str]) -> dict[str, Any]:
@@ -1021,8 +1343,9 @@ def cmd_restart(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 
 COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
-    "/start": cmd_help,
+    "/start": cmd_menu,
     "/help": cmd_help,
+    "/menu": cmd_menu,
     "/about": cmd_about,
     "/mode": cmd_mode,
     "/universe": cmd_universe,
@@ -1068,9 +1391,32 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         return cmd_positions(ctx, [])
     if data == "status":
         return cmd_status(ctx, [])
+    if data == "help":
+        return cmd_help(ctx, [])
+    if data == "universe_list":
+        return cmd_universe(ctx, [])
+    if data == "cycle_run":
+        return cmd_cycle(ctx, [])
+    if data.startswith("sell_select:"):
+        code = data.split(":", 1)[1]
+        return _sell_select(ctx, code)
     if data.startswith("sell_confirm:"):
         code = data.split(":", 1)[1]
         return _execute_confirmed_sell(ctx, code)
+    if data.startswith("universe_add:"):
+        code = data.split(":", 1)[1]
+        return _execute_universe_add(ctx, code)
+    if data.startswith("universe_remove:"):
+        code = data.split(":", 1)[1]
+        return _execute_universe_remove(ctx, code)
+    if data.startswith("universe_rm_pick:"):
+        code = data.split(":", 1)[1]
+        return _universe_remove_preview(ctx, code)
+    if data.startswith("mode_to:"):
+        target = data.split(":", 1)[1]
+        return cmd_mode(ctx, [target])
+    if data == "mode_confirm_live":
+        return cmd_mode(ctx, ["live", "confirm"])
     return _reply(f"모르는 버튼: `{data}`")
 
 

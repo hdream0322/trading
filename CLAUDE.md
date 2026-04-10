@@ -94,17 +94,25 @@ python3 -m compileall -q trading_bot/
 | `kis_mode_override` | paper/live 모드 런타임 오버라이드 | `bot/mode_switch.py`, `/mode` |
 | `credentials.env` | 자격증명 오버라이드 (`.env` 보다 우선) | `/setcreds`, `nano`, `credentials_watcher_job` |
 | `paper_account_issued` | 모의 계좌 사용 시작 시각 (90일 만료 카운트다운) | `bot/expiry.py`, `/reload`, `/setcreds paper` |
+| `universe.json` | 추적 종목 런타임 오버라이드 | `/universe add`, `/universe remove` |
 
-## 텔레그램 커맨드 (16개)
+## 텔레그램 커맨드 (17개)
+
+**시작**
+- `/menu`, `/start` — 메인 허브 (자주 쓰는 동작을 버튼 하나로)
 
 **조회**
 - `/help`, `/status`, `/positions`, `/signals`, `/cost`, `/mode`, `/universe`, `/about`
 
 **조작**
 - `/stop`, `/resume` — 킬 스위치 토글
-- `/sell CODE` — 특정 종목 전량 판매 (confirm 버튼)
+- `/sell` — 보유 종목 목록을 버튼으로 띄워 선택 (또는 `/sell CODE` 로 직접 지정)
+- `/positions` — 목록 + 종목별 판매 버튼
 - `/cycle` — 사이클 1회 즉시 실행
-- `/mode paper|live [confirm]` — 런타임 모드 전환
+- `/mode` — 현재 모드 표시 + 전환 버튼 (또는 `/mode paper|live [confirm]` 로 직접 전환)
+- `/universe` — 목록
+- `/universe add CODE` — 종목 추가 (KIS 이름 조회 후 예/아니오 버튼)
+- `/universe remove` — 추적 종목 버튼 목록 → 선택 후 확인 (또는 `/universe remove CODE`)
 
 **업데이트**
 - `/update` — 현재/최신 버전 비교
@@ -114,7 +122,7 @@ python3 -m compileall -q trading_bot/
 **자격증명**
 - `/setcreds paper KEY SECRET ACCOUNT` — 텔레그램 직접 교체 (원본 메시지 자동 삭제)
 - `/setcreds live KEY SECRET ACCOUNT confirm` — 실전 교체 (confirm 필수)
-- `/reload` — `data/credentials.env` 수동 재로드
+- `/reload` — `data/credentials.env` 수동 재로드 (파일 없으면 `/setcreds` 안내)
 - `/restart` — 컨테이너 완전 재시작 (`SIGTERM` → Docker restart 정책)
 
 기동 시 `main.py` 가 `telegram.set_commands(TELEGRAM_BOT_COMMANDS)` 호출 → 텔레그램
