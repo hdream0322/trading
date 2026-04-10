@@ -921,22 +921,22 @@ def _check_update(ctx: BotContext) -> dict[str, Any]:
     lines.append("")
 
     if has_update is False:
-        lines.append("✅ *이미 최신 버전입니다*")
-        lines.append("추가 업데이트가 필요하지 않습니다.")
+        lines.append("✅ *이미 최신 버전이에요*")
+        lines.append("지금은 업데이트할 게 없어요.")
     elif has_update is True:
-        lines.append("🆕 *새 버전이 있습니다*")
+        lines.append("🆕 *새 버전이 있어요*")
         lines.append("")
         lines.append("적용하려면 아래 명령어를 입력하세요:")
         lines.append("`/update confirm`")
         lines.append("")
-        lines.append("_Watchtower 가 새 이미지를 내려받고 봇을 재시작합니다._")
-        lines.append("_소요 시간 약 30~60초, 이 과정에서 잠시 응답이 중단됩니다._")
+        lines.append("_약 30~60초 뒤 봇이 자동으로 다시 시작돼요._")
+        lines.append("_그동안 잠깐 응답이 멈출 수 있어요._")
     else:
         # digest 비교 실패 — 사용자가 직접 판단
-        lines.append("❓ *업데이트 필요 여부 확인 불가*")
+        lines.append("❓ *업데이트 여부를 확인할 수 없어요*")
         lines.append("")
-        lines.append("GHCR 연결에 문제가 있어 이미지 비교를 할 수 없습니다.")
-        lines.append("강제로 업데이트를 시도하려면 `/update confirm` 입력.")
+        lines.append("서버 연결에 문제가 있어서 버전 비교를 못했어요.")
+        lines.append("그래도 업데이트를 시도하려면 `/update confirm` 을 입력하세요.")
 
     return _reply("\n".join(lines))
 
