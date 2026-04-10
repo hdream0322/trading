@@ -147,12 +147,24 @@ def check_for_update() -> tuple[bool, str, str]:
     return current != remote, current, remote
 
 
-def trigger_update(token: str, timeout: float = 15.0) -> dict[str, object]:
+def trigger_update(token: str) -> dict[str, object]:
     """Watchtower 에게 즉시 업데이트 요청.
 
-    Watchtower 는 요청 수신 후 비동기로 이미지 pull + 컨테이너 교체를 수행한다.
-    이 함수는 HTTP 응답까지만 기다리고 반환 — 업데이트 결과는 Telegram 알림으로
-    사용자에게 전달된다.
+    중요: Watchtower HTTP API 는 fire-and-forget 이 아니라 *동기* 호출이다.
+    업데이트 작업(scan + pull + stop + recreate)이 전부 끝난 후에야 HTTP 응답을
+    보낸다. 이 과정은 이미지 크기/네트워크에 따라 30~120초 걸릴 수 있다.
+
+    따라서 이 함수는 두 단계 타임아웃을 둔다:
+      - connect timeout: 5초 — TCP 연결 실패는 빠르게 감지
+      - read timeout: 5초 — 응답을 끝까지 기다리지 않음
+
+    ReadTimeout 은 "요청은 전달됐지만 응답이 늦음 = 처리 중" 으로 해석하고
+    성공으로 간주. 결과는 Watchtower 의 자체 Telegram 알림 + 봇 재기동 메시지로
+    사용자에게 별도 통지된다.
+
+    반환 dict 의 status:
+      - "triggered"        : 즉시 응답 받음 (보통 이미 최신인 경우)
+      - "accepted"         : ReadTimeout — 처리 중 (가장 흔한 경우)
     """
     if not token:
         raise RuntimeError(
@@ -160,19 +172,25 @@ def trigger_update(token: str, timeout: float = 15.0) -> dict[str, object]:
             "openssl rand -hex 32 로 생성 후 추가하고 봇을 재시작하세요."
         )
 
+    http_timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
     try:
         resp = httpx.post(
             WATCHTOWER_UPDATE_URL,
             headers={"Authorization": f"Bearer {token}"},
-            timeout=timeout,
+            timeout=http_timeout,
         )
     except httpx.ConnectError as exc:
         raise RuntimeError(
             f"Watchtower 에 연결할 수 없습니다 ({exc}). "
             f"'sudo docker compose ps' 로 watchtower 컨테이너가 떠있는지 확인하세요."
         ) from exc
-    except httpx.TimeoutException as exc:
-        raise RuntimeError(f"Watchtower 응답 시간 초과: {exc}") from exc
+    except httpx.ConnectTimeout as exc:
+        raise RuntimeError(f"Watchtower 연결 타임아웃: {exc}") from exc
+    except httpx.ReadTimeout:
+        # 정상 케이스: Watchtower 가 업데이트 중이라 응답이 늦음.
+        # 요청은 이미 전달됐고, 결과는 Watchtower 알림으로 별도 전송된다.
+        log.info("Watchtower ReadTimeout — 요청은 전달됨, 백그라운드 처리 중")
+        return {"status": "accepted", "http_status": None}
 
     if resp.status_code == 401:
         raise RuntimeError(
