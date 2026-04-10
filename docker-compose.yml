@@ -1,0 +1,16 @@
+services:
+  trading-bot:
+    build: .
+    container_name: trading-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Seoul
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./tokens:/app/tokens
+      - ./config:/app/config:ro
+    # Stage 2+: scheduler 엔트리. 평일 장중에만 사이클 실행.
+    command: ["python", "-m", "trading_bot.main"]

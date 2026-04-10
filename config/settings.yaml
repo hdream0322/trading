@@ -1,0 +1,36 @@
+mode: paper  # paper | live (환경변수 KIS_MODE가 우선)
+
+universe:
+  - {code: "005930", name: "삼성전자"}
+  - {code: "000660", name: "SK하이닉스"}
+  - {code: "035720", name: "카카오"}
+  - {code: "035420", name: "NAVER"}
+  - {code: "005380", name: "현대차"}
+
+cycle_minutes: 10
+
+market_hours:
+  open: "09:00"
+  close: "15:30"
+
+risk:
+  max_position_per_symbol_pct: 15   # 종목당 총자산 최대 비중 (%)
+  max_concurrent_positions: 3       # 동시 보유 최대 종목 수
+  daily_loss_limit_pct: 3           # 전일 대비 이만큼 손실 시 신규 매수 차단
+  cooldown_minutes: 60              # 같은 종목 재진입까지 최소 대기
+  max_orders_per_day: 6             # 일일 총 주문 건수 상한
+
+llm:
+  model: "claude-haiku-4-5-20251001"
+  temperature: 0
+  confidence_threshold: 0.75
+  daily_cost_limit_usd: 5
+  # Anthropic 가격 ($/MTok). 모델 교체하면 함께 업데이트.
+  input_price_per_mtok: 1.0
+  output_price_per_mtok: 5.0
+
+prefilter:
+  rsi_period: 14
+  rsi_buy_below: 35
+  rsi_sell_above: 70
+  min_volume_ratio: 1.2   # 20일 평균 대비 거래량이 1.2배 이상일 때만 후보

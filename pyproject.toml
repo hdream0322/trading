@@ -1,0 +1,21 @@
+[project]
+name = "trading-bot"
+version = "0.1.0"
+description = "KIS Open API + Claude 기반 자동매매 봇"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx[http2]>=0.27",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "anthropic>=0.40",
+    "apscheduler>=3.10",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
