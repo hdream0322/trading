@@ -19,7 +19,7 @@ from trading_bot.kis.client import KisClient
 from trading_bot.notify import telegram
 from trading_bot.risk import kill_switch
 from trading_bot.risk.manager import RiskDecision, RiskManager
-from trading_bot.signals import indicators, prefilter
+from trading_bot.signals import exit_strategy, indicators, prefilter
 from trading_bot.signals.llm import ClaudeSignalClient, LlmDecision
 from trading_bot.store import repo
 
@@ -43,6 +43,7 @@ def run_cycle(
         "buy": 0, "sell": 0, "hold": 0, "errors": 0,
         "cost_usd": 0.0,
         "orders_submitted": 0, "orders_rejected_by_risk": 0,
+        "exits_executed": 0,
     }
 
     daily_cost = repo.today_llm_cost_usd()
@@ -71,8 +72,22 @@ def run_cycle(
         balance_summary.get("asst_icdc_erng_rt", "?"),
     )
 
+    # ─────────────────────────────────────────────
+    # 0. 청산 체크 (손절/익절/트레일링) — 유니버스 스캔보다 먼저
+    # ─────────────────────────────────────────────
+    exit_events: list[dict[str, Any]] = []
+    exit_cfg = getattr(settings, "exit_rules", None) or {}
+    if exit_cfg and holdings:
+        exit_events = _run_exit_checks(
+            settings, kis, risk, holdings, balance_summary, exit_cfg
+        )
+        summary["exits_executed"] = len(exit_events)
+        # 청산된 종목은 유니버스 스캔에서 제외 (이미 판매됨 또는 판매 중)
+        for ev in exit_events:
+            holdings.pop(ev["code"], None)
+
     threshold = float(settings.llm.get("confidence_threshold", 0.75))
-    executed_events: list[dict[str, Any]] = []
+    executed_events: list[dict[str, Any]] = list(exit_events)
 
     for item in settings.universe:
         code = str(item["code"])
@@ -272,6 +287,119 @@ def run_cycle(
     return summary
 
 
+def _run_exit_checks(
+    settings: Settings,
+    kis: KisClient,
+    risk: RiskManager,
+    holdings: dict[str, dict[str, Any]],
+    balance_summary: dict[str, Any],
+    exit_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """보유 포지션 각각에 대해 손절/익절/트레일링 스톱 체크 및 즉시 판매.
+
+    반환: 실행된 청산 이벤트 목록 (텔레그램 요약 용도)
+    """
+    events: list[dict[str, Any]] = []
+
+    # 1. position_state 동기화 — 신규/제거된 포지션 반영
+    states = exit_strategy.sync_position_state(holdings, _now_iso())
+
+    # 2. 각 포지션에 대해:
+    #    a. high_water_mark 갱신 (+ trailing_active 전환)
+    #    b. 청산 조건 검사
+    #    c. 조건 충족 시 즉시 시장가 판매
+    for code, pos in list(holdings.items()):
+        state = states.get(code)
+        if state is None:
+            log.warning("%s: state 동기화 누락, 스킵", code)
+            continue
+
+        new_hwm, new_trailing = exit_strategy.update_high_water_mark(
+            code, state, float(pos["cur_price"]), exit_cfg,
+        )
+        # state 로컬에도 반영 (check_exit 에서 참조)
+        state["high_water_mark"] = new_hwm
+        state["trailing_active"] = new_trailing
+
+        decision = exit_strategy.check_exit(pos, state, exit_cfg)
+        if not decision.should_exit:
+            continue
+
+        log.info(
+            "청산 조건 충족 [%s] %s %s — %s",
+            decision.tag, code, pos.get("name", ""), decision.reason,
+        )
+
+        # 리스크 게이트 (판매는 is_exit=True 로 daily order count 우회)
+        rd = risk.check(
+            side="sell",
+            code=code,
+            name=str(pos.get("name", "")),
+            current_price=float(pos["cur_price"]),
+            balance_summary=balance_summary,
+            holdings=holdings,
+            is_exit=True,
+        )
+        if not rd.allowed:
+            log.warning("청산 차단 [%s] %s: %s", decision.tag, code, rd.reason)
+            repo.insert_order(
+                ts=_now_iso(),
+                code=code, name=str(pos.get("name", "")), side="sell",
+                qty=0, price=None,
+                mode=settings.kis.mode,
+                kis_order_no=None,
+                status="rejected",
+                raw_response=None,
+                reason=f"exit blocked ({decision.tag}): {rd.reason}",
+            )
+            continue
+
+        qty = int(pos["qty"])
+        try:
+            order_result = kis.place_market_order(code, "sell", qty)
+            order_no = order_result["order_no"]
+            repo.insert_order(
+                ts=_now_iso(),
+                code=code, name=str(pos.get("name", "")), side="sell",
+                qty=qty, price=None,
+                mode=settings.kis.mode,
+                kis_order_no=order_no,
+                status="submitted",
+                raw_response=json.dumps(order_result["raw"], ensure_ascii=False)[:2000],
+                reason=f"exit ({decision.tag}): {decision.reason}",
+            )
+            log.info(
+                "✅ 청산 주문 접수 [%s] %s %d주 order_no=%s",
+                decision.tag, code, qty, order_no,
+            )
+            events.append({
+                "type": "exit",
+                "tag": decision.tag,
+                "code": code,
+                "name": str(pos.get("name", "")),
+                "qty": qty,
+                "entry_price": decision.entry_price,
+                "exit_price": decision.current_price,
+                "pnl_pct": decision.pnl_pct,
+                "reason": decision.reason,
+                "order_no": order_no,
+            })
+        except Exception as exc:
+            log.exception("청산 주문 실행 실패 %s", code)
+            repo.insert_order(
+                ts=_now_iso(),
+                code=code, name=str(pos.get("name", "")), side="sell",
+                qty=qty, price=None,
+                mode=settings.kis.mode,
+                kis_order_no=None,
+                status="error",
+                raw_response=str(exc)[:500],
+                reason=f"exit error ({decision.tag}): {type(exc).__name__}",
+            )
+
+    return events
+
+
 def _notify_summary(
     settings: Settings,
     summary: dict[str, Any],
@@ -289,15 +417,34 @@ def _notify_summary(
         f"점검 종목 {summary['total']}개 / 후보 {summary['candidates']}개 / 오류 {summary['errors']}개",
         f"판단: 구매 {summary['buy']} · 판매 {summary['sell']} · 관망 {summary['hold']}",
         f"주문: 접수 {summary['orders_submitted']} · 안전장치 차단 {summary['orders_rejected_by_risk']}",
+        f"자동 청산: {summary.get('exits_executed', 0)}건",
         f"AI 비용(이번 점검) ${summary['cost_usd']:.4f} · 오늘 누적 ${daily_cost:.4f}",
     ]
 
-    submitted = [e for e in events if e["type"] == "submitted"]
-    rejected = [e for e in events if e["type"] == "rejected"]
+    exits = [e for e in events if e.get("type") == "exit"]
+    submitted = [e for e in events if e.get("type") == "submitted"]
+    rejected = [e for e in events if e.get("type") == "rejected"]
+
+    if exits:
+        lines.append("")
+        lines.append("*💸 자동 청산 판매*")
+        tag_emoji = {
+            "stop_loss": "🛡️",
+            "take_profit": "🎯",
+            "trailing_stop": "📉",
+        }
+        for e in exits:
+            emoji = tag_emoji.get(e["tag"], "•")
+            lines.append(
+                f"{emoji} {e['name']} ({e['code']}) {e['qty']}주\n"
+                f"  구매가 {int(e['entry_price']):,}원 → 판매가 {int(e['exit_price']):,}원 "
+                f"({e['pnl_pct']:+.2f}%)"
+            )
+            lines.append(f"  주문번호 `{e['order_no']}`")
 
     if submitted:
         lines.append("")
-        lines.append("*✅ 주문 접수*")
+        lines.append("*✅ 신규 주문 접수*")
         for e in submitted:
             side_ko = decision_ko(e["side"])
             side_emoji = "🟢" if e["side"] == "buy" else "🔴"

@@ -51,6 +51,7 @@ class Settings:
     risk: dict[str, Any]
     llm: dict[str, Any]
     prefilter: dict[str, Any]
+    exit_rules: dict[str, Any]   # Stage 6: 손절/익절/트레일링 스톱
 
 
 def _require(name: str) -> str:
@@ -118,4 +119,5 @@ def load_settings() -> Settings:
         risk=raw.get("risk", {}),
         llm=raw.get("llm", {}),
         prefilter=raw.get("prefilter", {}),
+        exit_rules=raw.get("exit", {}),
     )

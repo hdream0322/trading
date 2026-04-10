@@ -38,8 +38,13 @@ class RiskManager:
         current_price: float,
         balance_summary: dict[str, Any],
         holdings: dict[str, dict[str, Any]],
+        is_exit: bool = False,
     ) -> RiskDecision:
-        """단일 시그널에 대한 게이트 검사. 통과 시 주문 수량 포함 반환."""
+        """단일 시그널에 대한 게이트 검사. 통과 시 주문 수량 포함 반환.
+
+        is_exit=True: 손절/익절/트레일링 스톱 등 기계적 청산 판매.
+          일일 주문 수 한도를 우회 (포지션 보호가 한도보다 우선).
+        """
         if side not in {"buy", "sell"}:
             return RiskDecision(False, f"알 수 없는 side: {side}")
         if current_price <= 0:
@@ -49,13 +54,14 @@ class RiskManager:
         if side == "buy" and kill_switch.is_active():
             return RiskDecision(False, "긴급 정지 켜짐")
 
-        # 2. 일일 주문 수 한도
-        today_orders = repo.get_today_order_count()
-        if today_orders >= self.max_orders_per_day:
-            return RiskDecision(
-                False,
-                f"오늘 주문 횟수 제한 도달 ({today_orders}/{self.max_orders_per_day})",
-            )
+        # 2. 일일 주문 수 한도 — 청산 판매는 우회
+        if not is_exit:
+            today_orders = repo.get_today_order_count()
+            if today_orders >= self.max_orders_per_day:
+                return RiskDecision(
+                    False,
+                    f"오늘 주문 횟수 제한 도달 ({today_orders}/{self.max_orders_per_day})",
+                )
 
         # 3. 일일 손실 한도 (KIS 잔고의 asst_icdc_erng_rt 사용 — 전일 대비 자산 증감율)
         if side == "buy":  # 손절 판매는 손실 중에도 허용

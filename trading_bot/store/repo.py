@@ -99,3 +99,55 @@ def get_today_order_count() -> int:
             (today,),
         )
         return int(cur.fetchone()[0])
+
+
+# ─────────────────────────────────────────────────────────────
+# position_state — 손절/익절/트레일링 스톱 상태 추적
+# ─────────────────────────────────────────────────────────────
+
+def get_all_position_states() -> dict[str, dict[str, object]]:
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT code, name, entry_ts, entry_price, high_water_mark, trailing_active FROM position_state"
+        )
+        result: dict[str, dict[str, object]] = {}
+        for row in cur.fetchall():
+            result[row[0]] = {
+                "code": row[0],
+                "name": row[1],
+                "entry_ts": row[2],
+                "entry_price": float(row[3]),
+                "high_water_mark": float(row[4]),
+                "trailing_active": bool(row[5]),
+            }
+        return result
+
+
+def insert_position_state(
+    code: str,
+    name: str | None,
+    entry_ts: str,
+    entry_price: float,
+    high_water_mark: float,
+    trailing_active: bool = False,
+) -> None:
+    with _conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO position_state
+               (code, name, entry_ts, entry_price, high_water_mark, trailing_active)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (code, name, entry_ts, entry_price, high_water_mark, 1 if trailing_active else 0),
+        )
+
+
+def update_position_hwm(code: str, high_water_mark: float, trailing_active: bool) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE position_state SET high_water_mark = ?, trailing_active = ? WHERE code = ?",
+            (high_water_mark, 1 if trailing_active else 0, code),
+        )
+
+
+def delete_position_state(code: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM position_state WHERE code = ?", (code,))

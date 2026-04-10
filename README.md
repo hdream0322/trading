@@ -101,75 +101,226 @@ Actions가 자동으로 Docker 이미지를 빌드해서 `ghcr.io/hdream0322/tra
 푸시합니다. NAS는 이 이미지를 pull 받아 실행만 합니다 — 빌드 부담이 NAS에 없고,
 Container Manager의 "업데이트" 버튼이 **정상 동작**합니다.
 
-### 사전 준비
+> ℹ️ 본 저장소와 GHCR 패키지는 public 입니다. 별도 인증 없이 `docker pull` 이 가능합니다.
+> Private 으로 유지하고 싶으면 GHCR 로그인 절차가 추가되는데, 그 경우는 아래 "Private
+> 패키지 사용 시" 항목 참고.
 
-1. DSM → **패키지 센터**에서 **Container Manager** 설치
-2. DSM → **제어판 → 터미널 및 SNMP**에서 SSH 서비스 활성화
-3. File Station에서 `/volume1/docker/` 폴더 존재 확인
+### 사전 준비 (최초 1회)
 
-### GHCR 인증 (최초 1회)
+**1. DSM 패키지 설치**
 
-repo가 private이면 이미지도 기본 private이라 pull 받으려면 GitHub PAT가 필요합니다.
+DSM → **패키지 센터**에서 **Container Manager** 검색 후 설치 (DSM 7.2+). 이전 버전에서는
+"Docker" 패키지. 설치 후 `/volume1/docker/` 공유 폴더가 자동 생성됩니다.
 
-1. GitHub → **Settings → Developer settings → Personal access tokens → Tokens (classic)**
-2. **Generate new token (classic)**
-3. Scopes: `read:packages` 체크 (이게 핵심, repo 권한은 불필요)
-4. 생성된 `ghp_...` 토큰 복사
-5. NAS SSH에서:
-   ```bash
-   echo "<PAT>" | sudo docker login ghcr.io -u hdream0322 --password-stdin
-   ```
-6. `Login Succeeded` 뜨면 완료. 자격증명은 `/root/.docker/config.json` 에 저장됨.
+**2. SSH 서비스 활성화**
 
-### 최초 배포
+DSM → **제어판 → 터미널 및 SNMP → 터미널** 탭 → **SSH 서비스 활성화** 체크.
+
+이때 **포트 번호 확인** 필수. 기본은 22지만 보안상 바꿔놓은 경우가 많습니다 (예: 2222).
+나중에 `scp` / `ssh` 시 이 포트를 써야 합니다.
+
+**3. SSH 접속 테스트**
+
+맥북/PC 터미널에서:
 
 ```bash
-# 1) NAS SSH 접속
-ssh <your-account>@<nas-ip>
-
-# 2) 프로젝트 폴더 준비
-sudo mkdir -p /volume1/docker/trading
-cd /volume1/docker/trading
-
-# 3) docker-compose.yml 만 NAS로 가져옴
-sudo curl -O https://raw.githubusercontent.com/hdream0322/trading/main/docker-compose.yml
-
-# 또는 git clone으로 전체 repo (설정 파일 편집이 편함):
-# sudo git clone https://<PAT>@github.com/hdream0322/trading.git .
-
-# 4) .env 파일 생성 (맥북에서 scp로 전송)
-# 맥북 새 터미널에서:
-#   scp /Users/dream/Documents/dev/trading/.env <nas-user>@<nas-ip>:/volume1/docker/trading/.env
-sudo chmod 600 .env
-
-# 5) config 디렉터리 필요 (compose가 volume mount함)
-sudo mkdir -p config data logs tokens
-sudo curl -o config/settings.yaml https://raw.githubusercontent.com/hdream0322/trading/main/config/settings.yaml
-sudo curl -o config/market_holidays.yaml https://raw.githubusercontent.com/hdream0322/trading/main/config/market_holidays.yaml
-
-# 6) 이미지 pull + 기동
-sudo docker compose pull
-sudo docker compose up -d
-
-# 7) 로그 확인
-sudo docker compose logs -f trading-bot
+ssh <계정>@<NAS-IP>
+# SSH 포트가 22가 아니면:
+ssh -p 2222 <계정>@<NAS-IP>
 ```
 
-기동 성공 시 텔레그램으로 `*봇 기동* 🟡 PAPER — 사이클 10분 주기` 메시지 도착.
+IP 확인: DSM → 제어판 → 정보 센터 → 네트워크. `DREAM.local` 같은 mDNS 이름도 종종 됩니다.
+
+### 배포 절차
+
+#### Step 1 — 프로젝트 폴더와 설정 파일 다운로드
+
+NAS SSH 셸에서:
+
+```bash
+sudo mkdir -p /volume1/docker/trading/config
+cd /volume1/docker/trading
+sudo mkdir -p data logs tokens
+```
+
+이제 GitHub에서 `docker-compose.yml` 과 `config/` 아래 두 파일을 받습니다. **긴 URL을 한
+줄에 붙여넣으면 터미널이 쪼개는 경우가 있어서** 변수로 나눠 실행하는 방식이 안전합니다.
+
+```bash
+BASE=https://raw.githubusercontent.com/hdream0322/trading/main
+sudo curl -o docker-compose.yml           "$BASE/docker-compose.yml"
+sudo curl -o config/settings.yaml         "$BASE/config/settings.yaml"
+sudo curl -o config/market_holidays.yaml  "$BASE/config/market_holidays.yaml"
+sudo chown -R $USER:users /volume1/docker/trading
+ls -la
+```
+
+기대 결과: `docker-compose.yml` (약 700 B), `config/settings.yaml` (약 1.1 KB),
+`config/market_holidays.yaml` (약 900 B), 빈 `data/` `logs/` `tokens/` 디렉터리.
+
+#### Step 2 — `.env` 파일 NAS 로 전송
+
+`.env` 는 시크릿이라 git 에 포함되지 않습니다. 로컬에서 직접 만든 파일을 NAS 로 올려야
+합니다.
+
+**맥북에서 새 터미널 창** 을 여세요 (NAS SSH 창은 그대로 유지). 그 다음:
+
+```bash
+scp -O -P 2222 /Users/dream/Documents/dev/trading/.env \
+    <계정>@<NAS-IP>:/volume1/docker/trading/.env
+```
+
+플래그 설명:
+- `-P 2222` — SSH 포트. **대문자 P** (소문자 p 는 다른 의미). 22 면 생략 가능.
+- `-O` — 레거시 SCP 프로토콜 강제. Synology 는 기본으로 SFTP 서브시스템이 꺼져있어서
+  최신 `scp`(내부적으로 SFTP 사용)는 `subsystem request failed on channel 0` 에러를
+  냅니다. `-O` 가 이를 우회.
+
+패스워드 입력 후 전송 완료되면 **NAS SSH 창으로 돌아가서** 권한을 600 으로 제한:
+
+```bash
+chmod 600 .env
+ls -la .env
+```
+
+결과가 `-rw-------` 로 나오면 OK.
+
+#### Step 3 — 이미지 pull 과 컨테이너 기동
+
+```bash
+sudo docker compose pull
+sudo docker compose up -d
+sudo docker compose ps
+sudo docker compose logs --tail 50 trading-bot
+```
+
+- `pull` 은 GHCR 에서 이미지 다운로드 (첫 실행 30초~2분, 이후는 캐시).
+- `up -d` 는 detached 모드로 백그라운드 기동.
+- `ps` 에서 `trading-bot` 이 `Up` 상태면 정상.
+- 로그의 마지막 라인에 `Scheduler started` 가 보여야 하고, 이 시점에 텔레그램으로
+  `*봇 기동* 🟡 모의 — 점검 10분 주기` 메시지가 도착합니다.
+
+#### Step 4 — 최종 검증
+
+핸드폰 텔레그램 앱에서 `@trading_deurim_bot` 채팅방 열고:
+
+```
+/status
+```
+
+응답이 오면 NAS 의 봇이 정상 동작하는 것입니다. 응답 메시지 하단에 인라인 버튼 4개
+(`🛑 긴급 정지` `✅ 해제` `📊 내 주식` `💰 상태`) 가 붙어있어야 합니다.
 
 ### 업데이트 (원클릭)
 
-코드 변경 후 `git push` 하면 GitHub Actions가 알아서 이미지를 빌드합니다
-(소요 1~3분). 그 다음 **Container Manager**에서:
+코드 변경 후 `git push` 하면 GitHub Actions 가 1~3분 내에 새 이미지를 GHCR 에 올립니다.
+NAS 에 반영하는 방법 3가지 중 하나:
 
-1. **컨테이너** 탭 → `trading-bot` 선택
-2. **동작(Action) → 재설정(Reset)** 클릭
-3. 최신 이미지를 pull 받고 컨테이너를 새로 생성
+**방법 A — Container Manager GUI (가장 쉬움)**
+1. **Container Manager** 열기
+2. **컨테이너** 탭 → `trading-bot` 클릭
+3. **동작(Action) → 재설정(Reset)** 클릭
+4. "이미지를 최신 버전으로 업데이트하시겠습니까?" 같은 확인창 → 예
 
-또는 SSH에서 한 줄:
+**방법 B — SSH 한 줄**
 ```bash
 cd /volume1/docker/trading && sudo docker compose pull && sudo docker compose up -d
 ```
+
+**방법 C — DSM 작업 스케줄러 (자동 체크)**
+작업 스케줄러에서 "User-defined script" 작업을 만들어 위 SSH 명령을 주기적으로(예: 매일
+새벽 3시) 실행. 장외 시간대에 업데이트가 걸리니 안전.
+
+### 자동 재기동
+
+`docker-compose.yml` 에 `restart: unless-stopped` 가 들어있습니다. NAS 재부팅 / 컨테이너
+크래시 / DSM 업데이트 후에도 봇이 자동으로 다시 떠집니다. 별도 설정 불필요.
+
+### 중지 / 재시작
+
+```bash
+cd /volume1/docker/trading
+sudo docker compose stop           # 일시 중지
+sudo docker compose start          # 재시작
+sudo docker compose down           # 완전 종료 (볼륨과 데이터는 유지)
+sudo docker compose restart        # 재시작
+sudo docker compose logs -f        # 실시간 로그 (Ctrl+C 로 빠져나옴)
+```
+
+또는 Container Manager GUI 에서 해당 컨테이너 선택 후 중지/시작/재시작 버튼.
+
+### 데이터 영속성
+
+`docker-compose.yml` 볼륨 매핑:
+- `./data` → SQLite DB (`trading.sqlite`), KILL_SWITCH 파일
+- `./logs` → `bot.log` 파일
+- `./tokens` → KIS 액세스 토큰 캐시
+- `./config` → 설정 파일 (읽기 전용)
+
+**이미지 업데이트해도 위 볼륨은 유지**됩니다. 매매 이력, 긴급 정지 상태, 발급받은 토큰
+전부 보존.
+
+### Private 패키지 사용 시 (선택)
+
+GHCR 패키지를 private 으로 두고 싶은 경우:
+
+1. GitHub → **Settings → Developer settings → Personal access tokens → Tokens (classic)**
+2. **Generate new token** → Scopes 에서 `read:packages` 만 체크
+3. 생성된 `ghp_...` 토큰 복사
+4. NAS SSH 에서:
+   ```bash
+   echo "<PAT>" | sudo docker login ghcr.io -u <github-username> --password-stdin
+   ```
+5. `Login Succeeded` 확인. 이후 `docker compose pull` 이 정상 동작.
+6. 자격증명은 `/root/.docker/config.json` 에 영속 저장.
+
+### 트러블슈팅
+
+**`scp: subsystem request failed on channel 0`**
+Synology 에 SFTP 서브시스템이 꺼져있음. `scp -O` 로 레거시 프로토콜 사용 (위 Step 2
+참고). 또는 DSM → File Station → 설정 → SFTP 탭 에서 SFTP 서비스 활성화.
+
+**`ssh: Could not resolve hostname`**
+mDNS 가 풀리지 않음. `DREAM.local` 또는 직접 IP 사용 (예: `192.168.0.148`). IP 는 DSM →
+제어판 → 정보 센터 → 네트워크 탭에서 확인.
+
+**`Connection refused` on port 22**
+SSH 서비스 포트가 22가 아님. DSM → 제어판 → 터미널 및 SNMP 에서 포트 확인 후
+`-p <포트>` (ssh) 또는 `-P <포트>` (scp) 로 지정.
+
+**긴 URL 명령이 자동으로 줄바꿈됨**
+`sudo curl -o 파일 URL` 에서 URL 부분이 터미널에서 잘려 두 줄로 해석되는 경우. 변수로
+쪼개서 실행:
+```bash
+URL=https://raw.githubusercontent.com/.../파일.yaml
+sudo curl -o 파일.yaml "$URL"
+```
+
+**`permission denied while trying to connect to Docker daemon socket`**
+현재 사용자가 docker 그룹 멤버가 아님. `sudo` 붙여서 실행하거나, 그룹 추가:
+```bash
+sudo synogroup --add docker $USER
+```
+(DSM 에서 그룹 추가 후 재로그인)
+
+**`pull access denied`**
+GHCR 패키지가 private 상태거나 경로 오타. `docker-compose.yml` 의 `image:` 라인 확인.
+Public 확인: 브라우저로 `https://ghcr.io/v2/hdream0322/trading/tags/list` 접속 시 태그
+목록이 보이면 public.
+
+**텔레그램 기동 메시지가 안 옴**
+`.env` 의 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` 오타 가능성. 컨테이너 내부 확인:
+```bash
+sudo docker compose exec trading-bot env | grep TELEGRAM
+```
+
+**봇 응답은 오는데 `/status` 에서 "잔고 조회 실패"**
+KIS API 모의서버가 일시적으로 레이트리밋에 걸린 상태. 자동 재시도가 있지만 간혹 터짐.
+몇 초 뒤 다시 `/status` 로 재시도.
+
+**`모의투자 장종료 입니다` 에러**
+KIS 모의서버는 장 시간(평일 09:00~15:30 KST) 외에는 주문을 받지 않습니다. 정상 동작.
+다음 영업일 장 시작 후 자동으로 사이클이 돕니다.
 
 ### 완전 자동 업데이트 (Watchtower, 선택)
 
@@ -356,6 +507,25 @@ prefilter:
 `llm.daily_cost_limit_usd` 도달 시 해당일 LLM 호출 전면 중단. 사이클은 계속 돌지만
 후보 종목에 대한 Claude 판단 생성이 멈춥니다.
 
+### 6. 자동 청산 (손절/익절/트레일링 스톱)
+
+보유 포지션 각각에 대해 **매 점검마다** 세 가지 기계적 규칙을 체크합니다. 어느 하나라도
+충족하면 AI 판단을 건너뛰고 즉시 시장가 판매. 청산 판매는 `daily_loss_limit`,
+`max_orders_per_day`, 킬 스위치 영향을 받지 않습니다 (포지션 보호가 최우선).
+
+- **🛡️ 손실 차단** (`stop_loss_pct`, 기본 -5%): 손익률이 임계값 이하로 떨어지면 즉시 매도
+- **🎯 이익 확정** (`take_profit_pct`, 기본 +15%): 손익률이 임계값 이상이면 즉시 매도
+- **📉 트레일링 스톱** (`trailing_activation_pct`/`trailing_distance_pct`, 기본 +7%/-4%):
+  보유 중 최고 손익률이 +7% 를 한 번이라도 넘으면 트레일링이 활성화되고, 그 이후 최고점
+  대비 -4% 떨어지면 자동 판매
+
+예시 (기본 설정):
+- 20만 원에 구매 → 21만 4천 원(+7%) 도달 → 트레일링 활성화
+- 22만 원(+10%) 까지 상승 후 21만 1천 2백 원(-4% from hwm) 로 하락 → 자동 판매 (+5.6% 수익)
+
+트레일링 스톱은 **이익은 살리고 추세 전환만 잡는** 장치입니다. 이익 확정(+15%)에 닿기 전에
+추세가 꺾여도 활성화 조건만 넘었다면 손실 없이 정리됩니다.
+
 ## 트러블슈팅
 
 ### "초당 거래건수를 초과하였습니다" (HTTP 500)
@@ -446,7 +616,7 @@ trading/
 - [x] **Stage 3** — 주문 실행 + 리스크 매니저 + 킬 스위치
 - [x] **Stage 4** — 텔레그램 양방향 제어
 - [x] **Stage 5** — NAS Docker 배포
-- [ ] **Stage 6** — 체결 확인 폴링 + 손절/익절 자동 청산
+- [x] **Stage 6** — 손절/익절/트레일링 스톱 자동 청산
 - [ ] **Stage 7** — 웹 대시보드 (FastAPI + 차트)
 - [ ] **Stage 8** — Lean 엔진 백테스트 통합, 전략 튜닝
 

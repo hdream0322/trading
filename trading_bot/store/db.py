@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS errors (
     traceback TEXT
 );
 
+CREATE TABLE IF NOT EXISTS position_state (
+    code TEXT PRIMARY KEY,
+    name TEXT,
+    entry_ts TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    high_water_mark REAL NOT NULL,
+    trailing_active INTEGER DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 CREATE INDEX IF NOT EXISTS idx_positions_ts ON positions_snapshot(ts);
