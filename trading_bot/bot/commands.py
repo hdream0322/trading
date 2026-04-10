@@ -749,22 +749,14 @@ def cmd_reload(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     """
     if not CREDENTIALS_OVERRIDE_FILE.exists():
         return _reply(
-            "⚠️ *credentials.env 파일 없음*\n\n"
-            f"다음 경로에 파일을 먼저 생성하세요:\n"
-            f"`data/credentials.env`\n\n"
-            f"*파일 내용 예시*:\n"
-            "```\n"
-            "KIS_PAPER_APP_KEY=PSXXXxxxxXXXXxxxXXXX\n"
-            "KIS_PAPER_APP_SECRET=긴문자열...\n"
-            "KIS_PAPER_ACCOUNT_NO=12345678\n"
-            "KIS_LIVE_APP_KEY=PSYYYyyyyYYYYyyyYYYY\n"
-            "KIS_LIVE_APP_SECRET=긴문자열...\n"
-            "KIS_LIVE_ACCOUNT_NO=87654321\n"
-            "```\n\n"
-            "NAS SSH 에서:\n"
-            "`nano /volume1/docker/trading/data/credentials.env`\n"
-            "`chmod 600 /volume1/docker/trading/data/credentials.env`\n\n"
-            "파일 생성 후 `/reload` 다시 입력."
+            "ℹ️ 아직 자격증명 오버라이드 파일이 없어요.\n\n"
+            "지금 봇은 `.env` 에 있는 키로 정상 동작 중입니다. "
+            "`/reload` 는 그 위에 덮어쓸 새 키가 있을 때만 의미가 있어요.\n\n"
+            "*새 앱키로 갈아끼우려면* 텔레그램에서 바로 입력하세요:\n"
+            "`/setcreds paper APP_KEY APP_SECRET ACCOUNT_NO`\n\n"
+            "- 파일이 자동으로 생성되고 즉시 반영됩니다\n"
+            "- 원본 메시지는 보안상 자동 삭제돼요\n"
+            "- 실전 계좌는 끝에 `confirm` 을 붙이세요"
         )
 
     try:
