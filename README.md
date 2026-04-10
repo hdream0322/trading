@@ -59,6 +59,144 @@
 - **로컬 개발 환경**: Python 3.11+ (3.9+에서도 동작하지만 3.11 권장)
 - **배포 환경**: Docker 가능한 리눅스 머신 (Synology NAS DS423+, DSM 7.2+ 기준 검증)
 
+아래 **처음 시작하기** 섹션에서 위 세 개(KIS, Anthropic, Telegram) 발급 절차를 하나씩
+안내합니다. 완전 처음이어도 30~60분이면 다 준비됩니다.
+
+## 처음 시작하기 (외부 계정 준비)
+
+봇을 돌리려면 **세 가지 외부 서비스** 계정/키가 필요합니다. 전부 오늘 안에 발급 가능합니다.
+
+| 서비스 | 용도 | 비용 |
+|---|---|---|
+| 한국투자증권 Open API | 주식 시세 조회, 주문 실행 | 무료 (모의투자 계좌 1억 원 가상자금) |
+| Anthropic Claude API | AI 매매 판단 | $5 충전 시 수천 회 호출 가능 (Haiku 4.5 기준) |
+| Telegram Bot | 알림 + 원격 제어 | 무료 |
+
+### 1단계. 한국투자증권 (KIS) Open API 앱키 발급
+
+> 실전 주식 계좌가 없어도 OK. 비대면 계좌 개설을 먼저 하세요. 모의투자는 실전 계좌가
+> 있으면 자동으로 생성됩니다.
+
+**1-1. 회원가입 및 계좌**
+1. [한국투자증권 공식 사이트](https://securities.koreainvestment.com) 회원가입
+2. 모바일 앱 또는 PC 웹으로 **비대면 계좌 개설** (신분증 + 본인 명의 은행 계좌)
+3. 계좌번호 받음 (예: `50181827`, 8자리 + 상품코드 `01`)
+
+**1-2. Open API 서비스 신청**
+1. [KIS Developers](https://apiportal.koreainvestment.com) 접속 → 로그인 (증권 계정으로)
+2. **KIS Developers → 신청/해지** 메뉴
+3. **OPEN API 서비스 신청** 클릭
+4. 이용 약관 동의 → 신청 완료
+
+**1-3. 앱키 발급 (모의투자용)**
+1. **KIS Developers → 앱 관리 → 앱 생성**
+2. 앱 이름: 아무거나 (예: `trading-bot`)
+3. 거래 유형: **모의투자** 선택
+4. 생성되면 `APP KEY` 와 `APP SECRET` 가 표시됨 → **복사해서 메모장에 저장** (시크릿은
+   이 화면을 벗어나면 다시 볼 수 없습니다)
+
+**1-4. 모의투자 계좌번호 확인**
+1. 한국투자증권 앱 로그인 → 계좌 목록에서 **모의투자** 계좌 번호 확인
+2. `XXXXXXXX-YY` 형식이면 `XXXXXXXX` = `KIS_PAPER_ACCOUNT_NO`,
+   `YY` = `KIS_PAPER_ACCOUNT_PRODUCT_CD` (보통 `01`)
+
+> 💡 실전 계좌로도 같은 방식으로 한 번 더 앱키 발급하면 `KIS_LIVE_*` 변수에 넣을 수
+> 있습니다. 시세 조회가 실전 서버로만 안정적으로 돌아가기 때문에 **실전 키도 함께
+> 등록해두는 것을 권장**합니다 (모드는 `paper` 유지).
+
+### 2단계. Anthropic Claude API 키 발급
+
+**2-1. 가입 + 크레딧 충전**
+1. [console.anthropic.com](https://console.anthropic.com) 회원가입 (구글 계정 가능)
+2. **Plans & Billing → Credits** → Add credits → **최소 $5 충전**
+3. 결제 수단 등록 (신용카드 또는 Link by Stripe)
+4. Billing 페이지에서 `Credit balance: $5.00` 확인
+
+**2-2. API 키 생성**
+1. **Settings → API keys → Create Key**
+2. 이름: `trading-bot`
+3. 생성된 `sk-ant-api03-...` 토큰 **복사해서 메모장 저장** (이 화면 벗어나면 재확인 불가)
+
+> ⚠️ 신규 계정에서 크레딧이 있는데도 "Credit balance too low" 에러가 나오면 API 키를
+> 재발급해보세요. 간혹 서버 캐시 문제로 기존 키가 잔고 부족 상태로 잠길 수 있습니다.
+
+### 3단계. Telegram 봇 생성 + chat_id 확인
+
+**3-1. 봇 만들기**
+1. Telegram 앱 열기 → 상단 검색창에 `@BotFather` 검색 → 채팅
+2. `/newbot` 전송
+3. 봇 이름 입력 (자유, 예: `My Trading Bot`)
+4. 봇 사용자명 입력 (영문, `_bot` 으로 끝나야 함, 예: `my_trading_123_bot`)
+5. 성공하면 토큰이 출력됨:
+   ```
+   1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ1234567890
+   ```
+   이 토큰이 `TELEGRAM_BOT_TOKEN` 값입니다.
+
+**3-2. chat_id 확인**
+1. 방금 만든 봇을 Telegram 검색으로 찾아서 채팅창 열기
+2. **아무 메시지나** 하나 보내기 (예: `hi`) — `/start` 는 가끔 전달이 안 되니 평문으로
+3. 브라우저에서 아래 URL 열기 (토큰 부분만 바꿔서):
+   ```
+   https://api.telegram.org/bot<토큰>/getUpdates
+   ```
+   예:
+   ```
+   https://api.telegram.org/bot1234567890:ABC.../getUpdates
+   ```
+4. JSON 응답에서 `"chat":{"id":123456789, ...}` 부분의 **숫자가 chat_id**
+5. 그 숫자가 `TELEGRAM_CHAT_ID` 값
+
+### 4단계. `.env` 파일 작성
+
+프로젝트 루트에 `.env` 파일을 만들고 위에서 수집한 값들을 채웁니다.
+
+**로컬 개발용** (맥북/PC에서 테스트):
+```bash
+cd trading
+cp .env.example .env
+chmod 600 .env
+nano .env   # 또는 vim, code .env 등 원하는 에디터
+```
+
+**`.env` 파일 내용 예시**:
+```dotenv
+# 운용 모드 — 처음에는 반드시 paper 로 시작
+KIS_MODE=paper
+
+# 모의투자 계좌 (1단계에서 발급)
+KIS_PAPER_APP_KEY=PSXXXxxxxXXXXxxxXXXX
+KIS_PAPER_APP_SECRET=longBase64String...
+KIS_PAPER_ACCOUNT_NO=50181827
+KIS_PAPER_ACCOUNT_PRODUCT_CD=01
+
+# 실전 키 — 있으면 넣어두고 KIS_MODE 만 바꾸면 전환됨
+# 시세 조회는 모드가 paper 여도 실전 키로 하기 때문에 같이 넣어두는 걸 권장
+KIS_LIVE_APP_KEY=PSYYYyyyyYYYYyyyYYYY
+KIS_LIVE_APP_SECRET=longBase64String...
+KIS_LIVE_ACCOUNT_NO=47375928
+KIS_LIVE_ACCOUNT_PRODUCT_CD=01
+
+# Anthropic (2단계)
+ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Telegram (3단계)
+TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
+TELEGRAM_CHAT_ID=123456789
+
+# 런타임
+TZ=Asia/Seoul
+LOG_LEVEL=INFO
+```
+
+**보안 체크리스트**:
+- [ ] `.env` 파일 권한 `600` (`chmod 600 .env`)
+- [ ] `.gitignore` 에 `.env` 가 포함돼 있는지 확인 (이 저장소는 이미 포함됨)
+- [ ] `.env` 를 실수로 슬랙/이메일/채팅에 붙여넣지 않기
+- [ ] 만약 키가 유출됐다면 **즉시 재발급** (KIS 앱 관리, Anthropic Settings, BotFather `/revoke`)
+
+이제 **로컬 테스트** 또는 **NAS 배포** 로 이동 가능합니다.
+
 ## 빠른 시작 (로컬)
 
 ```bash

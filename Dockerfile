@@ -1,9 +1,14 @@
 FROM python:3.11-slim
 
+# GitHub Actions가 빌드 시 git tag 또는 branch 이름을 전달.
+# 로컬 `docker build` 에선 기본값 dev 사용.
+ARG BOT_VERSION=dev
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Seoul \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    BOT_VERSION=${BOT_VERSION}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata ca-certificates \

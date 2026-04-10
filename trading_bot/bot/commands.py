@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import sqlite3
+import sys
 from datetime import datetime
 from typing import Any, Callable
 
+from trading_bot import __version__ as bot_version
 from trading_bot.bot.context import BotContext
 from trading_bot.kis.client import KisClient
 from trading_bot.risk import kill_switch
@@ -49,6 +52,21 @@ def confidence_pct(value: float | None) -> str:
     if value is None:
         return ""
     return f"{int(round(value * 100))}%"
+
+
+def fmt_uptime(delta_seconds: float) -> str:
+    """초 단위 업타임을 '3일 2시간 15분' 형태로."""
+    total = int(delta_seconds)
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}일")
+    if hours:
+        parts.append(f"{hours}시간")
+    parts.append(f"{minutes}분")
+    return " ".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -100,6 +118,7 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /cost — 오늘 AI 분석 비용
 /mode — 지금 거래 모드 (실전/모의)
 /universe — 추적 중인 종목 목록
+/about — 봇 버전, 가동 시간, 전체 설정 요약
 
 *⚙️ 조작*
 /stop — 🛑 긴급 정지 (새로 구매 안 함)
@@ -292,13 +311,88 @@ def cmd_cycle(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"후보 {summary.get('candidates', 0)} · "
         f"구매 {summary.get('buy', 0)} · 판매 {summary.get('sell', 0)} · 관망 {summary.get('hold', 0)}\n"
         f"주문 접수 {summary.get('orders_submitted', 0)} · 안전장치 차단 {summary.get('orders_rejected_by_risk', 0)}\n"
+        f"자동 청산 {summary.get('exits_executed', 0)} · "
         f"AI 비용 ${summary.get('cost_usd', 0):.4f}"
     )
+
+
+def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """봇 메타 정보 + 전체 설정 요약."""
+    s = ctx.settings
+    risk = s.risk or {}
+    exit_cfg = s.exit_rules or {}
+    llm_cfg = s.llm or {}
+    prefilter_cfg = s.prefilter or {}
+
+    uptime_s = (datetime.now() - ctx.started_at).total_seconds()
+    uptime = fmt_uptime(uptime_s)
+
+    badge = mode_badge(s.kis.mode)
+    quote_server = "실전 서버" if s.kis_quote.mode == "live" else "모의 서버"
+    kill_badge = "🛑 켜짐" if kill_switch.is_active() else "✅ 꺼짐"
+
+    try:
+        today_orders = repo.get_today_order_count()
+    except Exception:
+        today_orders = 0
+    try:
+        today_cost = repo.today_llm_cost_usd()
+    except Exception:
+        today_cost = 0.0
+
+    # 임계값을 퍼센트 정수로 표시
+    conf_thr_int = int(round(float(llm_cfg.get("confidence_threshold", 0.75)) * 100))
+
+    lines = [
+        f"*자동매매 봇 정보*",
+        f"버전: `{bot_version}`",
+        f"Python: `{platform.python_version()}` · {platform.system()}",
+        f"가동 시간: {uptime}",
+        f"기동 시각: {ctx.started_at:%Y-%m-%d %H:%M:%S}",
+        "",
+        f"*거래 설정* {badge}",
+        f"• 시세 서버: {quote_server}",
+        f"• 계좌: `{s.kis.account_no}-{s.kis.account_product_cd}`",
+        f"• 관심 종목: {len(s.universe)}개",
+        f"• 점검 주기: {s.cycle_minutes}분",
+        f"• 장 시간: {s.market_open} ~ {s.market_close}",
+        f"• 긴급 정지: {kill_badge}",
+        "",
+        f"*🤖 AI 판단*",
+        f"• 모델: `{llm_cfg.get('model', 'claude-haiku-4-5')}`",
+        f"• 확신도 임계값: {conf_thr_int}%",
+        f"• 일일 AI 비용 한도: `${float(llm_cfg.get('daily_cost_limit_usd', 5)):.2f}`",
+        f"• 오늘 사용: `${today_cost:.4f}`",
+        "",
+        f"*📋 1차 조건 (룰베이스 사전필터)*",
+        f"• RSI 과매도 기준: < {prefilter_cfg.get('rsi_buy_below', 35)}",
+        f"• RSI 과매수 기준: > {prefilter_cfg.get('rsi_sell_above', 70)}",
+        f"• 거래량 최소 배수: {prefilter_cfg.get('min_volume_ratio', 1.2)}x (20일 평균 대비)",
+        "",
+        f"*🛡️ 안전장치 (리스크 매니저)*",
+        f"• 종목당 비중 상한: {risk.get('max_position_per_symbol_pct', 15)}%",
+        f"• 동시 보유 최대: {risk.get('max_concurrent_positions', 3)}종목",
+        f"• 일일 손실 한도: -{risk.get('daily_loss_limit_pct', 3)}%",
+        f"• 일일 주문 한도: {risk.get('max_orders_per_day', 6)}건 (오늘 {today_orders}건)",
+        f"• 재거래 대기: {risk.get('cooldown_minutes', 60)}분",
+        "",
+        f"*💸 자동 청산*",
+        f"• 🛡️ 손실 차단: -{exit_cfg.get('stop_loss_pct', 5)}%",
+        f"• 🎯 이익 확정: +{exit_cfg.get('take_profit_pct', 15)}%",
+        f"• 📉 트레일링 활성: +{exit_cfg.get('trailing_activation_pct', 7)}%",
+        f"• 📉 트레일링 낙폭: -{exit_cfg.get('trailing_distance_pct', 4)}%",
+        "",
+        f"*🔗 저장소*",
+        f"• GitHub: github.com/hdream0322/trading",
+        f"• 이미지: `ghcr.io/hdream0322/trading:latest`",
+    ]
+    return _reply("\n".join(lines))
 
 
 COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/start": cmd_help,
     "/help": cmd_help,
+    "/about": cmd_about,
     "/mode": cmd_mode,
     "/universe": cmd_universe,
     "/status": cmd_status,

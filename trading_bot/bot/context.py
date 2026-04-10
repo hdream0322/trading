@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from threading import Lock
 from typing import TYPE_CHECKING
 
@@ -17,9 +18,11 @@ class BotContext:
 
     trading_lock은 "자동 사이클의 주문 실행"과 "수동 /sell"을 직렬화해서
     동시에 같은 종목 또는 잔고에 대해 경합이 나지 않도록 한다.
+    started_at은 봇 프로세스 기동 시각 — /about 에서 업타임 계산에 사용.
     """
     settings: "Settings"
     kis: "KisClient"
     risk: "RiskManager"
     llm: "ClaudeSignalClient | None"
     trading_lock: Lock = field(default_factory=Lock)
+    started_at: datetime = field(default_factory=datetime.now)
