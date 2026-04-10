@@ -20,6 +20,28 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────
+# Telegram / 자동완성 메뉴에 등록될 커맨드 목록
+# 봇 기동 시 telegram.set_commands(..., TELEGRAM_BOT_COMMANDS) 호출
+# ─────────────────────────────────────────────────────────────
+
+TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
+    ("help", "사용법 보기"),
+    ("status", "지금 상태 (자산·킬스위치·비용)"),
+    ("positions", "갖고 있는 주식"),
+    ("signals", "오늘 매매 추천 (최근 10개)"),
+    ("cost", "오늘 AI 분석 비용"),
+    ("mode", "지금 거래 모드 (실전/모의)"),
+    ("universe", "추적 중인 종목 목록"),
+    ("about", "봇 버전 및 전체 설정"),
+    ("stop", "🛑 긴급 정지 (새로 구매 차단)"),
+    ("resume", "✅ 긴급 정지 풀기"),
+    ("sell", "특정 종목 전부 팔기 (확인 필요)"),
+    ("cycle", "지금 바로 점검 실행"),
+    ("update", "최신 버전 확인"),
+]
+
+
+# ─────────────────────────────────────────────────────────────
 # 포맷 헬퍼 — 토스 증권처럼 읽기 쉽게
 # ─────────────────────────────────────────────────────────────
 
@@ -441,9 +463,23 @@ def _check_update(ctx: BotContext) -> dict[str, Any]:
 
 
 def _apply_update(ctx: BotContext) -> dict[str, Any]:
-    """/update confirm — 실제 Watchtower 호출로 업데이트 적용."""
+    """/update confirm — digest 비교 후 필요할 때만 Watchtower 호출."""
     token = ctx.settings.watchtower_http_token
     current_version = bot_version
+
+    # 선행 체크: 이미 최신이면 Watchtower 호출 자체를 건너뛴다.
+    # 이렇게 해야 불필요한 Watchtower 알림("1 Scanned, 0 Updated") 이 안 뜨고
+    # 봇의 응답 한 줄로 깔끔하게 마무리된다.
+    try:
+        has_update, _, _ = update_manager.check_for_update()
+    except Exception as exc:
+        log.warning("digest 비교 실패, Watchtower 에 맡김: %s", exc)
+        has_update = True  # 확실치 않으면 일단 호출
+
+    if not has_update:
+        return _reply(f"✅ 현재 최신 버전입니다 (`{current_version}`)")
+
+    # 실제 업데이트 필요 → Watchtower 호출
     latest_version: str | None = None
     try:
         latest_version = update_manager.fetch_latest_release_version()
@@ -463,9 +499,6 @@ def _apply_update(ctx: BotContext) -> dict[str, Any]:
         "",
         "Watchtower 가 새 이미지를 내려받고 봇을 재시작합니다.",
         "약 30~60초 후 *봇 기동* 메시지가 도착하면 완료입니다.",
-        "",
-        "_업데이트 필요가 없으면 Watchtower 가 '1 Scanned, 0 Updated' 알림만 전송하고 "
-        "봇은 계속 현재 버전으로 동작합니다._",
     ]
     return _reply("\n".join(lines))
 

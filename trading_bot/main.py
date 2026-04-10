@@ -10,6 +10,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from trading_bot.bot import update_manager
+from trading_bot.bot.commands import TELEGRAM_BOT_COMMANDS
 from trading_bot.bot.context import BotContext
 from trading_bot.bot.poller import TelegramPoller
 from trading_bot.config import Settings, load_settings
@@ -105,6 +106,9 @@ def main() -> int:
         finally:
             kis.close()
         return 0
+
+    # Telegram 커맨드 자동완성 메뉴 등록 (사용자가 `/` 입력 시 목록 표시)
+    telegram.set_commands(settings.telegram, TELEGRAM_BOT_COMMANDS)
 
     # 백그라운드 Telegram 커맨드 수신기
     poller = TelegramPoller(ctx)

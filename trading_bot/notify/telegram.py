@@ -74,6 +74,35 @@ def get_updates(
         return []
 
 
+def set_commands(cfg: TelegramConfig, commands: list[tuple[str, str]]) -> bool:
+    """Telegram 사용자가 `/` 입력 시 표시되는 자동완성 메뉴를 등록.
+
+    commands: [(command_name_without_slash, description), ...]
+    description 은 1~256자, command 는 소문자 영문+숫자+언더스코어만 허용.
+    이 호출은 idempotent — 봇 기동 시마다 호출해도 무방.
+    """
+    payload = {
+        "commands": [
+            {"command": cmd, "description": desc}
+            for cmd, desc in commands
+        ]
+    }
+    try:
+        resp = httpx.post(
+            _api_url(cfg, "setMyCommands"),
+            json=payload,
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            log.warning("Telegram setMyCommands 실패 [%s]: %s", resp.status_code, resp.text)
+            return False
+        log.info("Telegram 커맨드 메뉴 등록 완료 (%d개)", len(commands))
+        return True
+    except Exception as exc:
+        log.warning("Telegram setMyCommands 예외: %s", exc)
+        return False
+
+
 def answer_callback(
     cfg: TelegramConfig,
     callback_query_id: str,
