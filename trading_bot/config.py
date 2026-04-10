@@ -18,6 +18,11 @@ load_dotenv(ROOT / ".env")
 # 순환 import 방지를 위해 Path 만 다시 계산 (같은 값).
 _MODE_OVERRIDE_FILE = ROOT / "data" / "kis_mode_override"
 
+# KIS 자격증명 런타임 오버라이드 파일.
+# 존재하면 .env 의 KIS_* 값을 덮어씀. 3개월 주기 앱키 갱신 시 이 파일만 수정하고
+# 텔레그램 /reload 하면 Docker 재시작 없이 새 키가 반영됨.
+CREDENTIALS_OVERRIDE_FILE = ROOT / "data" / "credentials.env"
+
 
 @dataclass
 class KisConfig:
@@ -84,6 +89,21 @@ def _read_mode_override() -> str | None:
         return None
 
 
+def load_credentials_override() -> bool:
+    """data/credentials.env 가 있으면 그 값으로 os.environ 을 덮어쓴다.
+
+    런타임 호출 (텔레그램 /reload) 에도 동일하게 동작하므로 새 앱키/시크릿을 적용할 때
+    Docker 재시작이 필요 없다.
+
+    Returns True if file loaded, False if not found.
+    """
+    if not CREDENTIALS_OVERRIDE_FILE.exists():
+        return False
+    load_dotenv(CREDENTIALS_OVERRIDE_FILE, override=True)
+    log.info("credentials override 로드: %s", CREDENTIALS_OVERRIDE_FILE)
+    return True
+
+
 def build_trade_cfg(mode: str) -> KisConfig:
     """KIS 모드에 맞는 거래용 KisConfig 를 환경변수에서 조립.
 
@@ -107,6 +127,9 @@ def load_settings() -> Settings:
     if not settings_path.exists():
         raise RuntimeError(f"설정 파일 없음: {settings_path}")
     raw = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+
+    # 자격증명 오버라이드 파일이 있으면 먼저 로드 (docker env_file 값 덮어쓰기)
+    load_credentials_override()
 
     # Mode 결정 우선순위:
     #   1. data/kis_mode_override 파일 (텔레그램 /mode 커맨드로 설정)

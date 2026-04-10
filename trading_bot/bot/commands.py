@@ -11,7 +11,12 @@ from typing import Any, Callable
 from trading_bot import __version__ as bot_version
 from trading_bot.bot import mode_switch, update_manager
 from trading_bot.bot.context import BotContext
-from trading_bot.config import KisConfig, build_trade_cfg
+from trading_bot.config import (
+    CREDENTIALS_OVERRIDE_FILE,
+    KisConfig,
+    build_trade_cfg,
+    load_credentials_override,
+)
 from trading_bot.kis.client import KisClient
 from trading_bot.risk import kill_switch
 from trading_bot.store import repo
@@ -39,6 +44,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("sell", "특정 종목 전부 팔기 (확인 필요)"),
     ("cycle", "지금 바로 점검 실행"),
     ("update", "최신 버전 확인"),
+    ("reload", "자격증명(앱키/시크릿) 재로드"),
 ]
 
 
@@ -156,6 +162,9 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /update enable — 자동 업데이트 켜기 (매일 02:00 KST)
 /update disable — 자동 업데이트 끄기
 /update status — 자동 업데이트 상태 확인
+
+*🔑 자격증명*
+/reload — data/credentials.env 재로드 (3개월 키 갱신 시 사용)
 
 /help — 이 도움말
 
@@ -716,6 +725,82 @@ def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     return _reply("\n".join(lines))
 
 
+def cmd_reload(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """data/credentials.env 파일을 재로드하고 KisClient 를 재생성.
+
+    3개월 주기로 KIS 모의투자 앱키를 재발급 받아야 할 때 사용.
+    Docker 재시작 없이 런타임에 새 자격증명 적용.
+
+    사용자 흐름:
+      1. KIS 에서 새 앱키/시크릿/계좌번호 발급
+      2. NAS SSH: nano /volume1/docker/trading/data/credentials.env
+      3. 파일에 새 값 작성 (KIS_PAPER_APP_KEY=... 등) 후 저장
+      4. 텔레그램 /reload — 즉시 반영
+    """
+    if not CREDENTIALS_OVERRIDE_FILE.exists():
+        return _reply(
+            "⚠️ *credentials.env 파일 없음*\n\n"
+            f"다음 경로에 파일을 먼저 생성하세요:\n"
+            f"`data/credentials.env`\n\n"
+            f"*파일 내용 예시*:\n"
+            "```\n"
+            "KIS_PAPER_APP_KEY=PSXXXxxxxXXXXxxxXXXX\n"
+            "KIS_PAPER_APP_SECRET=긴문자열...\n"
+            "KIS_PAPER_ACCOUNT_NO=12345678\n"
+            "KIS_LIVE_APP_KEY=PSYYYyyyyYYYYyyyYYYY\n"
+            "KIS_LIVE_APP_SECRET=긴문자열...\n"
+            "KIS_LIVE_ACCOUNT_NO=87654321\n"
+            "```\n\n"
+            "NAS SSH 에서:\n"
+            "`nano /volume1/docker/trading/data/credentials.env`\n"
+            "`chmod 600 /volume1/docker/trading/data/credentials.env`\n\n"
+            "파일 생성 후 `/reload` 다시 입력."
+        )
+
+    try:
+        load_credentials_override()
+        new_cfg = build_trade_cfg(ctx.settings.kis.mode)
+    except Exception as exc:
+        log.exception("자격증명 재로드 실패")
+        return _reply(
+            f"❌ *자격증명 재로드 실패*\n`{exc}`\n\n"
+            f"credentials.env 내용 확인 후 다시 시도하세요."
+        )
+
+    # 토큰 캐시 삭제 — 옛 키로 발급된 토큰은 새 키와 안 맞음
+    from pathlib import Path
+    tokens_dir = Path(__file__).resolve().parent.parent.parent / "tokens"
+    deleted_tokens = 0
+    try:
+        for token_file in tokens_dir.glob("kis_token_*.json"):
+            token_file.unlink()
+            deleted_tokens += 1
+    except Exception as exc:
+        log.warning("토큰 캐시 삭제 실패: %s", exc)
+
+    # KisClient 원자적 교체 (trading_lock 으로 사이클과 직렬화)
+    with ctx.trading_lock:
+        old_kis = ctx.kis
+        new_kis = KisClient(new_cfg, ctx.settings.kis_quote)
+        ctx.settings.kis = new_cfg
+        ctx.kis = new_kis
+        try:
+            old_kis.close()
+        except Exception:
+            pass
+
+    badge = mode_badge(new_cfg.mode)
+    return _reply(
+        f"✅ *자격증명 재로드 완료*\n\n"
+        f"모드: {badge}\n"
+        f"계좌: `{new_cfg.account_no}-{new_cfg.account_product_cd}`\n"
+        f"앱키 앞 12자: `{new_cfg.app_key[:12]}...`\n"
+        f"토큰 캐시 삭제: {deleted_tokens}개\n\n"
+        f"다음 KIS 호출 시 새 키로 새 토큰 자동 발급됩니다.\n"
+        f"`/status` 로 동작 확인."
+    )
+
+
 COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/start": cmd_help,
     "/help": cmd_help,
@@ -732,6 +817,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/sell": cmd_sell,
     "/cycle": cmd_cycle,
     "/update": cmd_update,
+    "/reload": cmd_reload,
 }
 
 
