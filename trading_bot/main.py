@@ -88,6 +88,10 @@ def main() -> int:
     risk = RiskManager(settings)
     ctx = BotContext(settings=settings, kis=kis, risk=risk, llm=llm)
 
+    # 기동 시점의 GHCR :latest digest 를 스냅샷 → 이후 /update 의
+    # "최신 여부" 비교 기준. 네트워크 실패해도 봇 기동은 계속.
+    update_manager.snapshot_current_digest()
+
     if kill_switch.is_active():
         log.warning("⚠️  KILL SWITCH 활성 상태로 기동 — 신규 매수 전체 차단")
 

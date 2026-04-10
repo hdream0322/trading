@@ -381,19 +381,42 @@ def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 
 def _manual_update(ctx: BotContext) -> dict[str, Any]:
+    """GHCR digest 비교 → 차이 있을 때만 Watchtower 호출."""
     token = ctx.settings.watchtower_http_token
+
+    # 1. 원격 digest 확인
+    try:
+        has_update, current, remote = update_manager.check_for_update()
+    except Exception as exc:
+        log.warning("digest 비교 실패, Watchtower fallback 호출: %s", exc)
+        has_update = True
+        current = update_manager.read_current_digest() or ""
+        remote = ""
+
+    # 2. 이미 최신이면 즉시 반환 (Watchtower 호출 없음)
+    if not has_update:
+        cur_short = current[7:19] if current.startswith("sha256:") else current[:12]
+        return _reply(
+            "✅ *이미 최신 버전입니다*\n\n"
+            f"현재: `{cur_short}`\n"
+            f"GHCR `:latest` 와 동일 — 추가 작업 없음.\n"
+            f"버전: `{bot_version}`"
+        )
+
+    # 3. 새 버전 있음 → Watchtower 호출
     try:
         update_manager.trigger_update(token)
     except Exception as exc:
-        return _reply(
-            f"❌ *업데이트 요청 실패*\n`{exc}`"
-        )
+        return _reply(f"❌ *업데이트 요청 실패*\n`{exc}`")
+
+    cur_short = (current[7:19] if current.startswith("sha256:") else (current[:12] or "unknown"))
+    rem_short = (remote[7:19] if remote.startswith("sha256:") else (remote[:12] or "(fetching)"))
     return _reply(
-        "🔄 *업데이트 확인 요청 전송*\n\n"
-        "Watchtower 가 최신 이미지를 확인 중입니다.\n"
-        "• 새 버전이 있으면: 잠시 후 봇이 재시작되고 *봇 기동* 메시지가 옵니다.\n"
-        "• 새 버전이 없으면: 아무 일도 일어나지 않고 기존 버전 유지.\n\n"
-        "_업데이트 결과는 Watchtower 알림으로도 전송됩니다._"
+        "🔄 *새 버전 감지 — 업데이트 시작*\n\n"
+        f"현재: `{cur_short}`\n"
+        f"신규: `{rem_short}`\n\n"
+        "Watchtower 가 새 이미지를 pull 하고 있습니다.\n"
+        "잠시 후 봇이 재시작되고 *봇 기동* 메시지가 도착합니다."
     )
 
 
