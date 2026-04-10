@@ -96,45 +96,86 @@ python -m trading_bot.main
 
 ## Docker 배포 (Synology NAS)
 
+배포는 **GitHub Container Registry(GHCR)** 기반입니다. `main` 브랜치로 push 하면 GitHub
+Actions가 자동으로 Docker 이미지를 빌드해서 `ghcr.io/hdream0322/trading:latest` 로
+푸시합니다. NAS는 이 이미지를 pull 받아 실행만 합니다 — 빌드 부담이 NAS에 없고,
+Container Manager의 "업데이트" 버튼이 **정상 동작**합니다.
+
 ### 사전 준비
 
 1. DSM → **패키지 센터**에서 **Container Manager** 설치
 2. DSM → **제어판 → 터미널 및 SNMP**에서 SSH 서비스 활성화
-3. File Station에서 `/volume1/docker/` 폴더 존재 확인 (Container Manager 설치 시 자동 생성)
+3. File Station에서 `/volume1/docker/` 폴더 존재 확인
 
-### 배포 단계
+### GHCR 인증 (최초 1회)
+
+repo가 private이면 이미지도 기본 private이라 pull 받으려면 GitHub PAT가 필요합니다.
+
+1. GitHub → **Settings → Developer settings → Personal access tokens → Tokens (classic)**
+2. **Generate new token (classic)**
+3. Scopes: `read:packages` 체크 (이게 핵심, repo 권한은 불필요)
+4. 생성된 `ghp_...` 토큰 복사
+5. NAS SSH에서:
+   ```bash
+   echo "<PAT>" | sudo docker login ghcr.io -u hdream0322 --password-stdin
+   ```
+6. `Login Succeeded` 뜨면 완료. 자격증명은 `/root/.docker/config.json` 에 저장됨.
+
+### 최초 배포
 
 ```bash
-# 1) NAS로 SSH 접속
+# 1) NAS SSH 접속
 ssh <your-account>@<nas-ip>
 
-# 2) git clone
-cd /volume1/docker
-git clone https://github.com/hdream0322/trading.git
-cd trading
+# 2) 프로젝트 폴더 준비
+sudo mkdir -p /volume1/docker/trading
+cd /volume1/docker/trading
 
-# 3) .env 파일 생성
-# 맥북 등 로컬에서 별도로 작성해둔 .env 파일을 scp로 전송하거나,
-# NAS에서 vi/nano로 직접 생성:
-nano .env
-chmod 600 .env
+# 3) docker-compose.yml 만 NAS로 가져옴
+sudo curl -O https://raw.githubusercontent.com/hdream0322/trading/main/docker-compose.yml
 
-# 4) 빌드 및 기동
-sudo docker compose up -d --build
+# 또는 git clone으로 전체 repo (설정 파일 편집이 편함):
+# sudo git clone https://<PAT>@github.com/hdream0322/trading.git .
 
-# 5) 로그 확인
+# 4) .env 파일 생성 (맥북에서 scp로 전송)
+# 맥북 새 터미널에서:
+#   scp /Users/dream/Documents/dev/trading/.env <nas-user>@<nas-ip>:/volume1/docker/trading/.env
+sudo chmod 600 .env
+
+# 5) config 디렉터리 필요 (compose가 volume mount함)
+sudo mkdir -p config data logs tokens
+sudo curl -o config/settings.yaml https://raw.githubusercontent.com/hdream0322/trading/main/config/settings.yaml
+sudo curl -o config/market_holidays.yaml https://raw.githubusercontent.com/hdream0322/trading/main/config/market_holidays.yaml
+
+# 6) 이미지 pull + 기동
+sudo docker compose pull
+sudo docker compose up -d
+
+# 7) 로그 확인
 sudo docker compose logs -f trading-bot
 ```
 
-기동 성공 시 텔레그램으로 `*봇 기동* 🟡 PAPER — 사이클 10분 주기` 메시지가 도착합니다.
+기동 성공 시 텔레그램으로 `*봇 기동* 🟡 PAPER — 사이클 10분 주기` 메시지 도착.
 
-### 업데이트
+### 업데이트 (원클릭)
 
+코드 변경 후 `git push` 하면 GitHub Actions가 알아서 이미지를 빌드합니다
+(소요 1~3분). 그 다음 **Container Manager**에서:
+
+1. **컨테이너** 탭 → `trading-bot` 선택
+2. **동작(Action) → 재설정(Reset)** 클릭
+3. 최신 이미지를 pull 받고 컨테이너를 새로 생성
+
+또는 SSH에서 한 줄:
 ```bash
-cd /volume1/docker/trading
-git pull
-sudo docker compose up -d --build
+cd /volume1/docker/trading && sudo docker compose pull && sudo docker compose up -d
 ```
+
+### 완전 자동 업데이트 (Watchtower, 선택)
+
+코드 push → 자동 재배포까지 원하면 Watchtower 컨테이너를 하나 더 띄웁니다. 몇 분마다
+GHCR 확인해서 새 이미지 있으면 자동으로 재시작합니다. 장 중에 재시작이 걸릴 수 있어
+주의 필요. 필요시 별도 설정.
 
 ### 중지 / 재시작
 
@@ -147,8 +188,8 @@ sudo docker compose restart        # 컨테이너 재시작
 
 ### Container Manager GUI에서 관리
 
-Container Manager → Container 탭 → `trading-bot` 선택 → 로그, 재시작, 중지 버튼 사용.
-프로젝트는 **Project** 탭에서 docker-compose.yml 기반으로 관리됩니다.
+Container Manager → **컨테이너** 탭 → `trading-bot` 선택 → 로그, 재시작, 중지, 재설정
+버튼 사용. **프로젝트** 탭에서 docker-compose.yml 기반 관리도 가능.
 
 ## 설정
 
