@@ -43,6 +43,7 @@ class Settings:
     kis_quote: KisConfig     # 시세용. 항상 live 서버 강제 (모의 서버는 시세 API가 불안정).
     telegram: TelegramConfig
     anthropic_api_key: str
+    watchtower_http_token: str   # Watchtower HTTP API 인증 토큰
     log_level: str
     universe: list[dict[str, str]]
     cycle_minutes: int
@@ -111,6 +112,7 @@ def load_settings() -> Settings:
             chat_id=_require("TELEGRAM_CHAT_ID"),
         ),
         anthropic_api_key=_optional("ANTHROPIC_API_KEY"),
+        watchtower_http_token=_optional("WATCHTOWER_HTTP_TOKEN"),
         log_level=_optional("LOG_LEVEL", "INFO").upper(),
         universe=raw["universe"],
         cycle_minutes=int(raw.get("cycle_minutes", 10)),

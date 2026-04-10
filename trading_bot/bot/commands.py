@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from trading_bot import __version__ as bot_version
+from trading_bot.bot import update_manager
 from trading_bot.bot.context import BotContext
 from trading_bot.kis.client import KisClient
 from trading_bot.risk import kill_switch
@@ -125,6 +126,12 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /resume — ✅ 긴급 정지 풀기
 /sell 005930 — 특정 종목 전부 팔기 (한 번 더 확인)
 /cycle — 지금 바로 점검 한 번 돌리기
+
+*🔄 업데이트*
+/update — 지금 바로 최신 버전 확인 + 반영
+/update enable — 자동 업데이트 켜기 (매일 02:00 KST)
+/update disable — 자동 업데이트 끄기
+/update status — 자동 업데이트 상태 확인
 
 /help — 이 도움말
 
@@ -316,6 +323,80 @@ def cmd_cycle(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     )
 
 
+def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """봇 업데이트 조작.
+
+    사용법:
+      /update              — 즉시 업데이트 확인 및 반영
+      /update enable       — 자동 업데이트 켜기
+      /update disable      — 자동 업데이트 끄기
+      /update status       — 자동 업데이트 상태 확인
+    """
+    if not args:
+        return _manual_update(ctx)
+
+    sub = args[0].lower()
+    if sub == "enable":
+        update_manager.enable_auto()
+        return _reply(
+            "✅ *자동 업데이트 켜짐*\n"
+            "매일 02:00 KST 에 새 버전이 있으면 자동으로 반영됩니다.\n"
+            "지금 즉시 확인하려면 `/update` 입력."
+        )
+    if sub == "disable":
+        update_manager.disable_auto(reason="telegram /update disable")
+        return _reply(
+            "🛑 *자동 업데이트 꺼짐*\n"
+            "이제 02:00 KST 자동 업데이트가 스킵됩니다.\n"
+            "수동 업데이트는 여전히 가능합니다 — `/update` 입력 시 즉시 반영.\n"
+            "다시 켜려면 `/update enable`."
+        )
+    if sub == "status":
+        enabled = update_manager.is_auto_enabled()
+        if enabled:
+            return _reply(
+                "*자동 업데이트 상태*\n"
+                "• 현재: ✅ 켜짐\n"
+                "• 스케줄: 매일 02:00 KST (장외 시간)\n"
+                "• 수동 실행: `/update`\n"
+                "• 끄기: `/update disable`"
+            )
+        else:
+            since = update_manager.disabled_since() or "(시각 불명)"
+            return _reply(
+                "*자동 업데이트 상태*\n"
+                f"• 현재: 🛑 꺼짐\n"
+                f"• 꺼진 시각: `{since}`\n"
+                "• 수동 실행: `/update` (여전히 가능)\n"
+                "• 다시 켜기: `/update enable`"
+            )
+
+    return _reply(
+        "*업데이트 명령어*\n"
+        "`/update` — 지금 바로 업데이트 확인 + 반영\n"
+        "`/update enable` — 자동 업데이트 켜기\n"
+        "`/update disable` — 자동 업데이트 끄기\n"
+        "`/update status` — 자동 업데이트 상태 확인"
+    )
+
+
+def _manual_update(ctx: BotContext) -> dict[str, Any]:
+    token = ctx.settings.watchtower_http_token
+    try:
+        update_manager.trigger_update(token)
+    except Exception as exc:
+        return _reply(
+            f"❌ *업데이트 요청 실패*\n`{exc}`"
+        )
+    return _reply(
+        "🔄 *업데이트 확인 요청 전송*\n\n"
+        "Watchtower 가 최신 이미지를 확인 중입니다.\n"
+        "• 새 버전이 있으면: 잠시 후 봇이 재시작되고 *봇 기동* 메시지가 옵니다.\n"
+        "• 새 버전이 없으면: 아무 일도 일어나지 않고 기존 버전 유지.\n\n"
+        "_업데이트 결과는 Watchtower 알림으로도 전송됩니다._"
+    )
+
+
 def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     """봇 메타 정보 + 전체 설정 요약."""
     s = ctx.settings
@@ -382,6 +463,14 @@ def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"• 📉 트레일링 활성: +{exit_cfg.get('trailing_activation_pct', 7)}%",
         f"• 📉 트레일링 낙폭: -{exit_cfg.get('trailing_distance_pct', 4)}%",
         "",
+        f"*🔄 자동 업데이트*",
+        (
+            f"• 상태: ✅ 켜짐 (매일 02:00 KST)"
+            if update_manager.is_auto_enabled()
+            else f"• 상태: 🛑 꺼짐 (`/update enable` 로 다시 켜기)"
+        ),
+        f"• 수동 실행: `/update`",
+        "",
         f"*🔗 저장소*",
         f"• GitHub: github.com/hdream0322/trading",
         f"• 이미지: `ghcr.io/hdream0322/trading:latest`",
@@ -404,6 +493,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/resume": cmd_resume,
     "/sell": cmd_sell,
     "/cycle": cmd_cycle,
+    "/update": cmd_update,
 }
 
 

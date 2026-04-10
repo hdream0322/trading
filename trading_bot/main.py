@@ -9,6 +9,7 @@ from pathlib import Path
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from trading_bot.bot import update_manager
 from trading_bot.bot.context import BotContext
 from trading_bot.bot.poller import TelegramPoller
 from trading_bot.config import Settings, load_settings
@@ -49,6 +50,22 @@ def cycle_job(ctx: BotContext) -> None:
             run_cycle(ctx.settings, ctx.kis, ctx.llm, ctx.risk)
         except Exception:
             log.exception("사이클 실행 중 예외")
+
+
+def auto_update_job(ctx: BotContext) -> None:
+    """매일 02:00 KST — 자동 업데이트 스케줄 훅.
+
+    상태 파일(data/AUTO_UPDATE_DISABLED) 검사 후 활성 상태면 Watchtower
+    HTTP API 호출. 비활성 상태면 로그만 남기고 스킵.
+    """
+    if not update_manager.is_auto_enabled():
+        log.info("자동 업데이트 비활성 상태 — 02:00 스케줄 스킵")
+        return
+    try:
+        update_manager.trigger_update(ctx.settings.watchtower_http_token)
+        log.info("자동 업데이트 요청 전송 완료 (Watchtower 비동기 처리)")
+    except Exception:
+        log.exception("자동 업데이트 요청 실패")
 
 
 def main() -> int:
@@ -99,6 +116,15 @@ def main() -> int:
         ),
         args=[ctx],
         id="cycle",
+        max_instances=1,
+        coalesce=True,
+    )
+    # 자동 업데이트 — 매일 02:00 KST 장외 시간
+    scheduler.add_job(
+        auto_update_job,
+        CronTrigger(hour=2, minute=0),
+        args=[ctx],
+        id="auto_update",
         max_instances=1,
         coalesce=True,
     )
