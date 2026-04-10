@@ -96,13 +96,14 @@ python3 -m compileall -q trading_bot/
 | `paper_account_issued` | 모의 계좌 사용 시작 시각 (90일 만료 카운트다운) | `bot/expiry.py`, `/reload`, `/setcreds paper` |
 | `universe.json` | 추적 종목 런타임 오버라이드 | `/universe add`, `/universe remove` |
 
-## 텔레그램 커맨드 (17개)
+## 텔레그램 커맨드 (18개)
 
 **시작**
 - `/menu`, `/start` — 메인 허브 (자주 쓰는 동작을 버튼 하나로)
 
 **조회**
 - `/help`, `/status`, `/positions`, `/signals`, `/cost`, `/mode`, `/universe`, `/about`
+- `/notes` — 지금 버전 릴리스 노트 (또는 `/notes 0.2.9` 로 특정 버전)
 
 **조작**
 - `/stop`, `/resume` — 킬 스위치 토글

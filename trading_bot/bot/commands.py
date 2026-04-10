@@ -41,6 +41,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("mode", "거래 모드 조회/전환 (실전/모의)"),
     ("universe", "추적 종목 목록/추가/제거"),
     ("about", "봇 버전 및 전체 설정"),
+    ("notes", "지금 버전 릴리스 노트 (또는 /notes 0.2.9)"),
     ("stop", "🛑 긴급 정지 (새로 구매 차단)"),
     ("resume", "✅ 긴급 정지 풀기"),
     ("sell", "특정 종목 전부 팔기 (확인 필요)"),
@@ -260,6 +261,8 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /universe remove — 종목 제거 (버튼으로 선택)
 /universe remove 005490 — 코드 직접 지정 제거
 /about — 봇 버전, 가동 시간, 전체 설정 요약
+/notes — 지금 실행 중인 버전의 릴리스 노트
+/notes 0.2.9 — 특정 버전의 릴리스 노트
 
 *⚙️ 조작*
 /stop — 🛑 긴급 정지 (새로 구매 안 함)
@@ -982,6 +985,54 @@ def _apply_update(ctx: BotContext) -> dict[str, Any]:
     return _reply("\n".join(lines))
 
 
+def cmd_notes(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """현재 (또는 지정한) 버전의 릴리스 노트를 표시.
+
+    사용법:
+      /notes          — 지금 실행 중인 버전의 릴리스 노트
+      /notes 0.2.9    — 특정 버전의 릴리스 노트 ('v' 접두사는 있어도/없어도 됨)
+
+    내부적으로 GitHub Git Data API 로 annotated tag 의 message 를 가져온다.
+    """
+    if args:
+        raw_version = args[0].strip().lstrip("vV")
+    else:
+        raw_version = bot_version
+
+    # 로컬 개발 빌드 (예: '0.2.0-dev') 에는 대응되는 태그가 없다
+    if not raw_version or "dev" in raw_version.lower() or "dirty" in raw_version.lower():
+        return _reply(
+            f"ℹ️ 현재 버전은 `{raw_version or '?'}` — 로컬 개발 빌드라 릴리스 노트가 없어요.\n"
+            f"릴리스된 버전만 노트를 조회할 수 있습니다.\n\n"
+            f"예: `/notes 0.2.10`"
+        )
+
+    tag_name = f"v{raw_version}"
+    try:
+        body = update_manager.fetch_tag_annotation(tag_name)
+    except Exception as exc:
+        log.warning("태그 annotation 조회 실패: %s", exc)
+        return _reply(f"❌ 릴리스 노트 조회 실패\n`{exc}`")
+
+    if not body:
+        return _reply(
+            f"ℹ️ `{tag_name}` 릴리스 노트를 찾을 수 없습니다.\n\n"
+            f"GitHub 에서 직접 확인:\n"
+            f"github.com/hdream0322/trading/releases/tag/{tag_name}"
+        )
+
+    summary = _summarize_release_body(body)
+    if not summary:
+        return _reply(f"ℹ️ `{tag_name}` 릴리스 노트 본문이 비어 있습니다.")
+
+    header = (
+        f"📋 *릴리스 노트* `{raw_version}`"
+        if args
+        else f"📋 *지금 버전 릴리스 노트* `{raw_version}`"
+    )
+    return _reply(f"{header}\n```\n{summary}\n```")
+
+
 def _summarize_release_body(body: str, max_chars: int = 1500) -> str:
     """릴리스 바디/태그 메시지에서 사용자에게 보여줄 요약만 추출.
 
@@ -1394,6 +1445,8 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/help": cmd_help,
     "/menu": cmd_menu,
     "/about": cmd_about,
+    "/notes": cmd_notes,
+    "/changelog": cmd_notes,
     "/mode": cmd_mode,
     "/universe": cmd_universe,
     "/status": cmd_status,

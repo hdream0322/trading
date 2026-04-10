@@ -182,17 +182,18 @@ def fetch_latest_release_info(timeout: float = 10.0) -> dict[str, str]:
         raise RuntimeError("GitHub API 응답에 tag_name 없음")
     tag = raw_tag.lstrip("vV")
     html_url = str(data.get("html_url", "")).strip()
-    tag_body = _fetch_tag_annotation(raw_tag, timeout=timeout)
+    tag_body = fetch_tag_annotation(raw_tag, timeout=timeout)
     return {"tag": tag, "raw_tag": raw_tag, "body": tag_body, "html_url": html_url}
 
 
-def _fetch_tag_annotation(tag_name: str, timeout: float = 10.0) -> str:
+def fetch_tag_annotation(tag_name: str, timeout: float = 10.0) -> str:
     """annotated git tag 의 message 를 GitHub Git Data API 로 조회.
 
     2-step 호출:
       1. /git/refs/tags/<tag> → tag object SHA
       2. /git/tags/<sha> → message
 
+    `tag_name` 은 'v0.2.10' 처럼 'v' prefix 포함 형태.
     lightweight tag 는 step 1 의 object type 이 'commit' 이라 early return.
     네트워크/권한 실패는 조용히 빈 문자열 반환 (호출 측에서 폴백).
     """
