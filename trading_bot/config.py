@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -22,6 +23,11 @@ _MODE_OVERRIDE_FILE = ROOT / "data" / "kis_mode_override"
 # 존재하면 .env 의 KIS_* 값을 덮어씀. 3개월 주기 앱키 갱신 시 이 파일만 수정하고
 # 텔레그램 /reload 하면 Docker 재시작 없이 새 키가 반영됨.
 CREDENTIALS_OVERRIDE_FILE = ROOT / "data" / "credentials.env"
+
+# 추적 종목 런타임 오버라이드 파일.
+# 존재하면 settings.yaml 의 universe 블록을 덮어씀. 텔레그램 /universe add|remove
+# 커맨드가 이 파일을 갱신하며, 변경은 메모리(ctx.settings.universe)에도 즉시 반영됨.
+UNIVERSE_OVERRIDE_FILE = ROOT / "data" / "universe.json"
 
 
 @dataclass
@@ -87,6 +93,43 @@ def _read_mode_override() -> str | None:
         return mode if mode in ("paper", "live") else None
     except OSError:
         return None
+
+
+def load_universe_override() -> list[dict[str, str]] | None:
+    """data/universe.json 이 있으면 읽어서 리스트로 반환, 없으면 None.
+
+    포맷은 settings.yaml 의 universe 블록과 동일한 `[{code, name}, ...]`.
+    파손된 파일은 경고 로그 후 None 을 리턴해 settings.yaml 기본값으로 폴백.
+    """
+    if not UNIVERSE_OVERRIDE_FILE.exists():
+        return None
+    try:
+        data = json.loads(UNIVERSE_OVERRIDE_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("universe.json 파싱 실패, settings.yaml 기본값 사용: %s", exc)
+        return None
+    if not isinstance(data, list):
+        log.warning("universe.json 형식 이상 (list 가 아님), 기본값 사용")
+        return None
+    result: list[dict[str, str]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code", "")).strip()
+        name = str(item.get("name", "")).strip()
+        if code and name:
+            result.append({"code": code, "name": name})
+    return result or None
+
+
+def save_universe_override(universe: list[dict[str, str]]) -> None:
+    """universe 리스트를 data/universe.json 에 저장 (파일 덮어쓰기)."""
+    UNIVERSE_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    UNIVERSE_OVERRIDE_FILE.write_text(
+        json.dumps(universe, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    log.info("universe override 저장: %d개 종목", len(universe))
 
 
 def load_credentials_override() -> bool:
@@ -177,6 +220,11 @@ def load_settings() -> Settings:
     else:
         quote_cfg = trade_cfg
 
+    # universe 는 settings.yaml 이 기본값이고 data/universe.json 이 있으면 덮어씀.
+    # 텔레그램 /universe add|remove 로 런타임 편집되는 목록.
+    universe_override = load_universe_override()
+    universe = universe_override if universe_override is not None else raw["universe"]
+
     return Settings(
         kis=trade_cfg,
         kis_quote=quote_cfg,
@@ -187,7 +235,7 @@ def load_settings() -> Settings:
         anthropic_api_key=_optional("ANTHROPIC_API_KEY"),
         watchtower_http_token=_optional("WATCHTOWER_HTTP_TOKEN"),
         log_level=_optional("LOG_LEVEL", "INFO").upper(),
-        universe=raw["universe"],
+        universe=universe,
         cycle_minutes=int(raw.get("cycle_minutes", 10)),
         market_open=raw["market_hours"]["open"],
         market_close=raw["market_hours"]["close"],
