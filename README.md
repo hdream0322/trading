@@ -177,6 +177,45 @@ cd /volume1/docker/trading && sudo docker compose pull && sudo docker compose up
 GHCR 확인해서 새 이미지 있으면 자동으로 재시작합니다. 장 중에 재시작이 걸릴 수 있어
 주의 필요. 필요시 별도 설정.
 
+### 버전 릴리스
+
+프로젝트는 [semver](https://semver.org/lang/ko/) (`vMAJOR.MINOR.PATCH`)를 따릅니다.
+릴리스를 찍으면 GitHub Actions가 자동으로:
+
+1. Docker 이미지를 해당 버전 태그로 GHCR에 올림 (`:0.1.0`, `:0.1`, `:latest`)
+2. GitHub Release를 생성하고 마지막 릴리스 이후의 커밋 로그를 자동 changelog로 첨부
+
+**릴리스 찍는 법** (로컬에서):
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions 탭에서 `Create GitHub Release` 와 `Build and publish Docker image` 두
+워크플로우가 동시에 돌고, 수 분 내에 Release 페이지에 새 릴리스가 생깁니다.
+
+**특정 버전으로 배포 고정**:
+
+운용 중 `:latest` 를 쓰면 push할 때마다 다음 `docker compose pull` 에서 바로 업데이트
+됩니다. 안정성이 필요하면 `docker-compose.yml` 의 이미지 라인을 특정 버전으로 고정:
+
+```yaml
+services:
+  trading-bot:
+    image: ghcr.io/hdream0322/trading:v0.1.0   # latest 대신 특정 버전
+```
+
+이렇게 하면 새 릴리스가 나와도 자동 반영되지 않고, 수동으로 태그를 올려야 업데이트됩니다.
+실전 계좌 운용 전환 시 이 방식을 권장합니다.
+
+**롤백**:
+
+```yaml
+image: ghcr.io/hdream0322/trading:v0.0.9    # 이전 안정 버전으로 되돌림
+```
+후 `sudo docker compose pull && sudo docker compose up -d`
+
 ### 중지 / 재시작
 
 ```bash

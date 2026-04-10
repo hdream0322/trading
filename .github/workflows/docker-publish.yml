@@ -4,13 +4,12 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'trading_bot/**'
-      - 'config/**'
-      - 'scripts/**'
-      - 'Dockerfile'
-      - 'pyproject.toml'
-      - '.github/workflows/docker-publish.yml'
+    tags:
+      - 'v*'           # v0.1.0 같은 릴리스 태그에도 빌드
+    paths-ignore:
+      - 'README.md'
+      - '.env.example'
+      - '.gitignore'
   workflow_dispatch:  # 수동 트리거 허용
 
 env:
@@ -46,9 +45,15 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            # main 브랜치 푸시 → :latest
             type=raw,value=latest,enable={{is_default_branch}}
+            # 모든 푸시 → :sha-<short>
             type=sha,prefix=sha-,format=short
+            # 브랜치 이름 태그 (main, feature-xxx 등)
             type=ref,event=branch
+            # 릴리스 태그 v0.1.2 → :0.1.2 + :0.1
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push
         uses: docker/build-push-action@v5

@@ -1,0 +1,57 @@
+name: Create GitHub Release
+
+# v* 형식의 태그가 push 되면 릴리스를 자동 생성한다.
+# docker-publish.yml 워크플로우와 병렬로 돌아 이미지 빌드도 함께 진행.
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Release 생성에 필요
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # generate_release_notes가 이전 태그까지 비교하려면 필요
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            ## Docker 이미지
+
+            이 릴리스는 자동으로 GHCR에 Docker 이미지로 발행됩니다.
+
+            ```
+            ghcr.io/hdream0322/trading:${{ github.ref_name }}
+            ghcr.io/hdream0322/trading:latest
+            ```
+
+            ## 배포 (NAS)
+
+            **최신 버전으로 업데이트**
+            ```bash
+            cd /volume1/docker/trading
+            sudo docker compose pull
+            sudo docker compose up -d
+            ```
+
+            **이 특정 버전으로 고정**
+
+            `docker-compose.yml`에서 `image:` 라인을 수정:
+            ```yaml
+            image: ghcr.io/hdream0322/trading:${{ github.ref_name }}
+            ```
+            후 `sudo docker compose up -d`
+
+            ---
