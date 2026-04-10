@@ -103,6 +103,34 @@ def set_commands(cfg: TelegramConfig, commands: list[tuple[str, str]]) -> bool:
         return False
 
 
+def delete_message(cfg: TelegramConfig, message_id: int) -> bool:
+    """특정 메시지 삭제. 주로 시크릿을 포함한 사용자 메시지 (/setcreds) 처리용.
+
+    Bot API 제약: private 채팅에서 봇은 자신의 메시지는 언제든, 사용자 메시지는
+    48시간 이내에만 삭제 가능. /setcreds 는 즉시 삭제하므로 문제 없음.
+    """
+    payload = {
+        "chat_id": cfg.chat_id,
+        "message_id": message_id,
+    }
+    try:
+        resp = httpx.post(
+            _api_url(cfg, "deleteMessage"),
+            json=payload,
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            log.warning(
+                "Telegram deleteMessage 실패 [%s]: %s",
+                resp.status_code, resp.text[:200],
+            )
+            return False
+        return True
+    except Exception as exc:
+        log.warning("Telegram deleteMessage 예외: %s", exc)
+        return False
+
+
 def answer_callback(
     cfg: TelegramConfig,
     callback_query_id: str,

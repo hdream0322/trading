@@ -87,7 +87,9 @@ class TelegramPoller:
             parts = text.split()
             cmd = parts[0].split("@")[0].lower()  # /help@bot_name → /help
             args = parts[1:]
-            log.info("커맨드 수신: %s %s", cmd, args)
+            # /setcreds 는 로그에 args 남기지 말 것 (시크릿 포함)
+            log_args = "[REDACTED]" if cmd == "/setcreds" and args else args
+            log.info("커맨드 수신: %s %s", cmd, log_args)
             reply = handle_command(self.ctx, cmd, args)
             if reply:
                 telegram.send(
@@ -95,6 +97,13 @@ class TelegramPoller:
                     reply.get("text", ""),
                     reply_markup=reply.get("reply_markup"),
                 )
+                # 시크릿이 포함된 사용자 메시지는 즉시 삭제 (/setcreds 등)
+                if reply.get("delete_original"):
+                    msg_id = msg.get("message_id")
+                    if msg_id:
+                        telegram.delete_message(
+                            self.ctx.settings.telegram, int(msg_id)
+                        )
             return
 
         # Callback query (inline 버튼 탭)

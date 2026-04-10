@@ -9,7 +9,7 @@ from pathlib import Path
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from trading_bot.bot import expiry, update_manager
+from trading_bot.bot import expiry, runtime_state, update_manager
 from trading_bot.bot.commands import TELEGRAM_BOT_COMMANDS
 from trading_bot.bot.context import BotContext
 from trading_bot.bot.poller import TelegramPoller
@@ -90,15 +90,14 @@ def paper_expiry_check_job(ctx: BotContext) -> None:
         telegram.send(ctx.settings.telegram, message)
 
 
-# credentials.env 파일 mtime 감시용 전역 상태
-_creds_last_mtime: dict[str, float] = {"ts": 0.0}
-
-
 def credentials_watcher_job(ctx: BotContext) -> None:
     """5분마다 data/credentials.env 의 mtime 을 확인, 변경 감지 시 자동 재로드.
 
     사용자가 새 자격증명을 파일에 저장하면 /reload 커맨드 없이도 5분 내
     자동 반영된다. 3개월 갱신 시 사용자 경험 개선용.
+
+    mtime 상태는 runtime_state 모듈에 있어서 /setcreds 가 파일을 수정한
+    뒤에도 동기화할 수 있다 (중복 재로드 방지).
     """
     if not CREDENTIALS_OVERRIDE_FILE.exists():
         return
@@ -107,16 +106,18 @@ def credentials_watcher_job(ctx: BotContext) -> None:
     except OSError:
         return
 
-    if _creds_last_mtime["ts"] == 0.0:
+    if runtime_state.credentials_last_mtime == 0.0:
         # 최초 관찰 — baseline 으로만 기록하고 리로드 안 함
-        _creds_last_mtime["ts"] = current_mtime
+        runtime_state.credentials_last_mtime = current_mtime
         return
-    if current_mtime == _creds_last_mtime["ts"]:
+    if current_mtime == runtime_state.credentials_last_mtime:
         return  # 변경 없음
 
-    log.info("credentials.env 변경 감지 (%s → %s) 자동 재로드 시작",
-             _creds_last_mtime["ts"], current_mtime)
-    _creds_last_mtime["ts"] = current_mtime
+    log.info(
+        "credentials.env 변경 감지 (%s → %s) 자동 재로드 시작",
+        runtime_state.credentials_last_mtime, current_mtime,
+    )
+    runtime_state.credentials_last_mtime = current_mtime
 
     try:
         load_credentials_override()

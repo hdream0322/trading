@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from trading_bot import __version__ as bot_version
-from trading_bot.bot import expiry, mode_switch, update_manager
+from trading_bot.bot import expiry, mode_switch, runtime_state, update_manager
 from trading_bot.bot.context import BotContext
 from trading_bot.config import (
     CREDENTIALS_OVERRIDE_FILE,
@@ -44,7 +44,8 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("sell", "특정 종목 전부 팔기 (확인 필요)"),
     ("cycle", "지금 바로 점검 실행"),
     ("update", "최신 버전 확인"),
-    ("reload", "자격증명 재로드 (앱키 교체)"),
+    ("setcreds", "텔레그램으로 앱키 직접 교체"),
+    ("reload", "자격증명 재로드 (파일 수정 후)"),
     ("restart", "컨테이너 완전 재시작"),
 ]
 
@@ -104,10 +105,16 @@ def fmt_uptime(delta_seconds: float) -> str:
 # 응답 빌더
 # ─────────────────────────────────────────────────────────────
 
-def _reply(text: str, reply_markup: dict[str, Any] | None = None) -> dict[str, Any]:
+def _reply(
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+    delete_original: bool = False,
+) -> dict[str, Any]:
     out: dict[str, Any] = {"text": text}
     if reply_markup is not None:
         out["reply_markup"] = reply_markup
+    if delete_original:
+        out["delete_original"] = True
     return out
 
 
@@ -165,7 +172,8 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /update status — 자동 업데이트 상태 확인
 
 *🔑 자격증명 · 재시작*
-/reload — data/credentials.env 재로드 (3개월 키 갱신 시)
+/setcreds — 텔레그램으로 앱키 직접 교체 (3개월 갱신 시)
+/reload — data/credentials.env 파일 재로드
 /restart — 컨테이너 완전 재시작 (강력 재초기화)
 
 /help — 이 도움말
@@ -810,6 +818,180 @@ def cmd_reload(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     )
 
 
+def cmd_setcreds(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """텔레그램으로 KIS 자격증명 직접 교체.
+
+    사용법:
+      /setcreds                                  — 사용법 표시
+      /setcreds paper KEY SECRET ACCOUNT         — 모의 계좌 교체 (즉시)
+      /setcreds live KEY SECRET ACCOUNT confirm  — 실전 계좌 교체 (confirm 필수)
+
+    동작:
+      1. 인자 검증
+      2. data/credentials.env 에 병합 저장 (다른 모드 키는 보존)
+      3. load_credentials_override() → build_trade_cfg → KisClient 교체
+      4. 토큰 캐시 삭제 (해당 모드만)
+      5. paper 모드면 expiry.mark_updated() (카운트다운 리셋)
+      6. runtime_state.credentials_last_mtime 갱신 (watcher 중복 방지)
+      7. 원본 /setcreds 메시지 삭제 플래그 반환 → poller 가 실제로 삭제
+
+    보안:
+      - chat_id 화이트리스트는 이미 poller 에서 적용됨
+      - 시크릿 포함 메시지는 처리 직후 Telegram API 로 삭제
+      - 로그에는 [REDACTED] 로 남김 (poller 쪽에서 처리)
+    """
+    if not args:
+        return _reply(
+            "*자격증명 직접 교체*\n\n"
+            "*사용법*:\n"
+            "`/setcreds paper <APP_KEY> <APP_SECRET> <계좌번호>`\n"
+            "`/setcreds live <APP_KEY> <APP_SECRET> <계좌번호> confirm`\n\n"
+            "*예시*:\n"
+            "`/setcreds paper PSXXXyyy... longBase64String== 50181867`\n\n"
+            "*주의*:\n"
+            "- 모의(`paper`) 는 즉시 적용\n"
+            "- 실전(`live`) 은 마지막에 `confirm` 필수\n"
+            "- 시크릿이 포함된 메시지는 자동 삭제됩니다\n"
+            "- 파일에 쓰는 방식(`nano ... credentials.env` + `/reload`) 도 여전히 사용 가능"
+        )
+
+    mode = args[0].lower()
+    if mode not in ("paper", "live"):
+        return _reply("첫 인자는 `paper` 또는 `live` 여야 합니다")
+
+    if len(args) < 4:
+        need = "KEY SECRET 계좌번호" + (" confirm" if mode == "live" else "")
+        return _reply(
+            f"인자 부족.\n"
+            f"`/setcreds {mode} {need}` 형태로 입력하세요."
+        )
+
+    app_key = args[1]
+    app_secret = args[2]
+    account = args[3]
+
+    # 실전은 confirm 필수
+    if mode == "live":
+        if len(args) < 5 or args[4].lower() != "confirm":
+            return _reply(
+                "🚨 *실전 계좌 자격증명 교체*\n\n"
+                "실수 방지를 위해 마지막에 `confirm` 을 붙여야 합니다:\n"
+                f"`/setcreds live <KEY> <SECRET> <계좌> confirm`\n\n"
+                "실전 키는 실제 돈이 움직이는 계좌입니다. 신중하세요."
+            )
+
+    # 형식 검증
+    if not (10 <= len(app_key) <= 64):
+        return _reply(f"앱키 길이 이상: {len(app_key)}자 (보통 36자)")
+    if not (40 <= len(app_secret) <= 256):
+        return _reply(f"시크릿 길이 이상: {len(app_secret)}자 (보통 180자)")
+    if not account.isdigit() or not (8 <= len(account) <= 10):
+        return _reply(f"계좌번호 형식 이상: `{account}` (8자리 숫자 예상)")
+
+    # 기존 credentials.env 읽어서 병합 (다른 모드 키 보존)
+    existing: dict[str, str] = {}
+    if CREDENTIALS_OVERRIDE_FILE.exists():
+        try:
+            for line in CREDENTIALS_OVERRIDE_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    existing[k.strip()] = v
+        except OSError as exc:
+            return _reply(f"❌ 기존 credentials.env 읽기 실패\n`{exc}`")
+
+    prefix = "KIS_LIVE" if mode == "live" else "KIS_PAPER"
+    existing[f"{prefix}_APP_KEY"] = app_key
+    existing[f"{prefix}_APP_SECRET"] = app_secret
+    existing[f"{prefix}_ACCOUNT_NO"] = account
+    # 상품코드는 기존 값 유지, 없으면 기본 01
+    existing.setdefault(f"{prefix}_ACCOUNT_PRODUCT_CD", "01")
+
+    # 파일 쓰기
+    try:
+        CREDENTIALS_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with CREDENTIALS_OVERRIDE_FILE.open("w", encoding="utf-8") as f:
+            f.write("# 텔레그램 /setcreds 또는 수동 편집으로 관리되는 자격증명 오버라이드\n")
+            f.write("# 이 파일이 있으면 .env 의 KIS_* 값을 덮어씀\n")
+            f.write("# 마지막 갱신: /setcreds 또는 nano 편집\n\n")
+            for k in sorted(existing.keys()):
+                f.write(f"{k}={existing[k]}\n")
+        try:
+            CREDENTIALS_OVERRIDE_FILE.chmod(0o600)
+        except OSError:
+            pass
+        # watcher 가 중복 반응하지 않도록 mtime 기록 선반영
+        try:
+            runtime_state.credentials_last_mtime = CREDENTIALS_OVERRIDE_FILE.stat().st_mtime
+        except OSError:
+            pass
+    except OSError as exc:
+        return _reply(f"❌ credentials.env 파일 쓰기 실패\n`{exc}`")
+
+    # 런타임 반영
+    applied_now = False
+    try:
+        load_credentials_override()
+        # 현재 활성 모드와 일치할 때만 KisClient 교체
+        if ctx.settings.kis.mode == mode:
+            new_cfg = build_trade_cfg(mode)
+            with ctx.trading_lock:
+                old_kis = ctx.kis
+                new_kis = KisClient(new_cfg, ctx.settings.kis_quote)
+                ctx.settings.kis = new_cfg
+                ctx.kis = new_kis
+                try:
+                    old_kis.close()
+                except Exception:
+                    pass
+
+            # 해당 모드 토큰 캐시만 삭제
+            from pathlib import Path
+            tokens_dir = Path(__file__).resolve().parent.parent.parent / "tokens"
+            try:
+                token_file = tokens_dir / f"kis_token_{mode}.json"
+                if token_file.exists():
+                    token_file.unlink()
+            except OSError:
+                pass
+
+            if mode == "paper":
+                expiry.mark_updated()
+            applied_now = True
+    except Exception as exc:
+        log.exception("setcreds 런타임 반영 실패")
+        return _reply(
+            f"⚠️ 파일 저장은 됐지만 런타임 반영 실패\n"
+            f"`{exc}`\n\n"
+            f"/reload 로 재시도 가능.",
+            delete_original=True,
+        )
+
+    badge = mode_badge(mode)
+    if applied_now:
+        status_line = "✅ *즉시 반영됨*"
+    else:
+        status_line = (
+            f"💾 파일에 저장됨 (현재 활성 모드는 `{ctx.settings.kis.mode}` 이라 이 값은 대기)"
+        )
+
+    extra = ""
+    if mode == "paper" and applied_now:
+        extra = f"\n만료 카운트다운: {expiry.PAPER_EXPIRY_DAYS}일 리셋됨"
+
+    return _reply(
+        f"✅ *자격증명 교체 완료* {badge}\n\n"
+        f"계좌: `{account}`\n"
+        f"앱키 앞 12자: `{app_key[:12]}...`\n"
+        f"{status_line}{extra}\n\n"
+        f"_원본 /setcreds 메시지는 자동 삭제됩니다._\n"
+        f"`/status` 로 동작 확인.",
+        delete_original=True,
+    )
+
+
 def cmd_restart(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     """컨테이너 완전 재시작.
 
@@ -862,6 +1044,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/sell": cmd_sell,
     "/cycle": cmd_cycle,
     "/update": cmd_update,
+    "/setcreds": cmd_setcreds,
     "/reload": cmd_reload,
     "/restart": cmd_restart,
 }
