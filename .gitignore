@@ -9,7 +9,6 @@ venv/
 data/
 logs/
 tokens/
-KILL_SWITCH
 .DS_Store
 *.db
 *.sqlite

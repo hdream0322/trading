@@ -21,5 +21,6 @@ RUN pip install --no-cache-dir \
 
 COPY trading_bot/ ./trading_bot/
 COPY config/ ./config/
+COPY scripts/ ./scripts/
 
 CMD ["python", "-m", "trading_bot.main"]
