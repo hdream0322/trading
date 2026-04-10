@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from trading_bot import __version__ as bot_version
-from trading_bot.bot import mode_switch, update_manager
+from trading_bot.bot import expiry, mode_switch, update_manager
 from trading_bot.bot.context import BotContext
 from trading_bot.config import (
     CREDENTIALS_OVERRIDE_FILE,
@@ -44,7 +44,8 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("sell", "특정 종목 전부 팔기 (확인 필요)"),
     ("cycle", "지금 바로 점검 실행"),
     ("update", "최신 버전 확인"),
-    ("reload", "자격증명(앱키/시크릿) 재로드"),
+    ("reload", "자격증명 재로드 (앱키 교체)"),
+    ("restart", "컨테이너 완전 재시작"),
 ]
 
 
@@ -163,8 +164,9 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /update disable — 자동 업데이트 끄기
 /update status — 자동 업데이트 상태 확인
 
-*🔑 자격증명*
-/reload — data/credentials.env 재로드 (3개월 키 갱신 시 사용)
+*🔑 자격증명 · 재시작*
+/reload — data/credentials.env 재로드 (3개월 키 갱신 시)
+/restart — 컨테이너 완전 재시작 (강력 재초기화)
 
 /help — 이 도움말
 
@@ -789,15 +791,58 @@ def cmd_reload(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         except Exception:
             pass
 
+    # paper 모드 자격증명 재로드 시 만료 카운트다운 리셋
+    if new_cfg.mode == "paper":
+        expiry.mark_updated()
+
     badge = mode_badge(new_cfg.mode)
+    expiry_line = ""
+    if new_cfg.mode == "paper":
+        expiry_line = f"\n만료 카운트다운: {expiry.PAPER_EXPIRY_DAYS}일 리셋됨"
     return _reply(
         f"✅ *자격증명 재로드 완료*\n\n"
         f"모드: {badge}\n"
         f"계좌: `{new_cfg.account_no}-{new_cfg.account_product_cd}`\n"
         f"앱키 앞 12자: `{new_cfg.app_key[:12]}...`\n"
-        f"토큰 캐시 삭제: {deleted_tokens}개\n\n"
+        f"토큰 캐시 삭제: {deleted_tokens}개{expiry_line}\n\n"
         f"다음 KIS 호출 시 새 키로 새 토큰 자동 발급됩니다.\n"
         f"`/status` 로 동작 확인."
+    )
+
+
+def cmd_restart(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """컨테이너 완전 재시작.
+
+    /reload 와 다른 점: /reload 는 Python 프로세스 내부에서 자격증명만 교체하지만,
+    /restart 는 Python 프로세스 자체를 종료한다. docker-compose 의
+    restart: unless-stopped 정책에 의해 Docker 가 자동으로 새 컨테이너를 띄운다.
+
+    동작:
+      1. 텔레그램에 '재시작 시작' 응답 전송 (return)
+      2. 응답 전송 여유를 위해 2초 대기 후 SIGTERM 전송 (백그라운드 스레드)
+      3. SIGTERM → main.py 의 _shutdown 핸들러 → scheduler.shutdown →
+         sys.exit(0) → Docker 가 컨테이너 재생성
+      4. 새 컨테이너가 기동되며 '봇 기동' 메시지 발송
+
+    총 소요 시간: 약 10~20초 (이미지 다운로드 없이 순수 재시작).
+    """
+    import os
+    import signal
+    import threading
+    import time
+
+    def _delayed_kill() -> None:
+        time.sleep(2)  # 응답 메시지가 먼저 전송되도록 잠시 대기
+        log.warning("/restart 요청에 의한 SIGTERM 전송")
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_delayed_kill, daemon=True).start()
+
+    return _reply(
+        "🔄 *컨테이너 재시작 요청*\n\n"
+        "2초 후 봇 프로세스가 종료되고 Docker 가 새로 띄웁니다.\n"
+        "약 10~20초 후 *봇 기동* 메시지가 도착하면 완료입니다.\n\n"
+        "_이 동안 텔레그램 커맨드는 일시적으로 응답하지 않습니다._"
     )
 
 
@@ -818,6 +863,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/cycle": cmd_cycle,
     "/update": cmd_update,
     "/reload": cmd_reload,
+    "/restart": cmd_restart,
 }
 
 

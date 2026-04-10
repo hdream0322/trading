@@ -9,11 +9,17 @@ from pathlib import Path
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from trading_bot.bot import update_manager
+from trading_bot.bot import expiry, update_manager
 from trading_bot.bot.commands import TELEGRAM_BOT_COMMANDS
 from trading_bot.bot.context import BotContext
 from trading_bot.bot.poller import TelegramPoller
-from trading_bot.config import Settings, load_settings
+from trading_bot.config import (
+    CREDENTIALS_OVERRIDE_FILE,
+    Settings,
+    build_trade_cfg,
+    load_credentials_override,
+    load_settings,
+)
 from trading_bot.kis.client import KisClient
 from trading_bot.logging_setup import setup_logging
 from trading_bot.notify import telegram
@@ -69,6 +75,101 @@ def auto_update_job(ctx: BotContext) -> None:
         log.exception("자동 업데이트 요청 실패")
 
 
+def paper_expiry_check_job(ctx: BotContext) -> None:
+    """매일 08:00 KST — KIS 모의투자 계좌 만료 임박 여부 확인.
+
+    paper 모드일 때만 작동. 만료 7일 이내면 텔레그램 경고 전송.
+    이미 만료된 상태라면 매일 한 번씩 경고를 계속 보냄 (사용자가 재신청할 때까지).
+    """
+    if ctx.settings.kis.mode != "paper":
+        return
+    days_left = expiry.days_until_expiry()
+    message = expiry.build_expiry_warning(days_left, ctx.settings.kis.mode)
+    if message:
+        log.warning("paper 만료 경고: 남은 %s일", days_left)
+        telegram.send(ctx.settings.telegram, message)
+
+
+# credentials.env 파일 mtime 감시용 전역 상태
+_creds_last_mtime: dict[str, float] = {"ts": 0.0}
+
+
+def credentials_watcher_job(ctx: BotContext) -> None:
+    """5분마다 data/credentials.env 의 mtime 을 확인, 변경 감지 시 자동 재로드.
+
+    사용자가 새 자격증명을 파일에 저장하면 /reload 커맨드 없이도 5분 내
+    자동 반영된다. 3개월 갱신 시 사용자 경험 개선용.
+    """
+    if not CREDENTIALS_OVERRIDE_FILE.exists():
+        return
+    try:
+        current_mtime = CREDENTIALS_OVERRIDE_FILE.stat().st_mtime
+    except OSError:
+        return
+
+    if _creds_last_mtime["ts"] == 0.0:
+        # 최초 관찰 — baseline 으로만 기록하고 리로드 안 함
+        _creds_last_mtime["ts"] = current_mtime
+        return
+    if current_mtime == _creds_last_mtime["ts"]:
+        return  # 변경 없음
+
+    log.info("credentials.env 변경 감지 (%s → %s) 자동 재로드 시작",
+             _creds_last_mtime["ts"], current_mtime)
+    _creds_last_mtime["ts"] = current_mtime
+
+    try:
+        load_credentials_override()
+        new_cfg = build_trade_cfg(ctx.settings.kis.mode)
+    except Exception as exc:
+        log.exception("자동 credentials 재로드 실패")
+        telegram.send(
+            ctx.settings.telegram,
+            f"❌ *자격증명 자동 재로드 실패*\n"
+            f"credentials.env 변경을 감지했지만 로드 실패.\n"
+            f"`{exc}`",
+        )
+        return
+
+    # 토큰 캐시 삭제
+    from pathlib import Path
+    tokens_dir = Path(__file__).resolve().parent.parent / "tokens"
+    deleted = 0
+    try:
+        for token_file in tokens_dir.glob("kis_token_*.json"):
+            token_file.unlink()
+            deleted += 1
+    except Exception:
+        pass
+
+    # KisClient 원자적 교체
+    with ctx.trading_lock:
+        old_kis = ctx.kis
+        new_kis = KisClient(new_cfg, ctx.settings.kis_quote)
+        ctx.settings.kis = new_cfg
+        ctx.kis = new_kis
+        try:
+            old_kis.close()
+        except Exception:
+            pass
+
+    # paper 모드면 만료 카운트다운 리셋
+    if new_cfg.mode == "paper":
+        expiry.mark_updated()
+
+    log.info("자동 credentials 재로드 완료: %s 계좌 %s",
+             new_cfg.mode, new_cfg.account_no)
+    telegram.send(
+        ctx.settings.telegram,
+        f"✅ *자격증명 자동 재로드*\n"
+        f"`credentials.env` 변경 감지됨.\n\n"
+        f"새 계좌: `{new_cfg.account_no}-{new_cfg.account_product_cd}`\n"
+        f"앱키 앞 12자: `{new_cfg.app_key[:12]}...`\n"
+        f"토큰 캐시 삭제: {deleted}개\n"
+        f"다음 KIS 호출부터 새 키로 동작합니다.",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="사이클 한 번만 실행 후 종료")
@@ -92,6 +193,9 @@ def main() -> int:
     # 기동 시점의 GHCR :latest digest 를 스냅샷 → 이후 /update 의
     # "최신 여부" 비교 기준. 네트워크 실패해도 봇 기동은 계속.
     update_manager.snapshot_current_digest()
+
+    # paper 자격증명 만료 카운트다운 초기화 (파일 없는 경우만 생성)
+    expiry.ensure_issued_date()
 
     if kill_switch.is_active():
         log.warning("⚠️  KILL SWITCH 활성 상태로 기동 — 신규 매수 전체 차단")
@@ -133,6 +237,24 @@ def main() -> int:
         CronTrigger(hour=2, minute=0),
         args=[ctx],
         id="auto_update",
+        max_instances=1,
+        coalesce=True,
+    )
+    # paper 계좌 90일 만료 체크 — 매일 08:00 KST (장 시작 1시간 전)
+    scheduler.add_job(
+        paper_expiry_check_job,
+        CronTrigger(hour=8, minute=0),
+        args=[ctx],
+        id="paper_expiry_check",
+        max_instances=1,
+        coalesce=True,
+    )
+    # credentials.env 파일 변경 감시 — 5분마다
+    scheduler.add_job(
+        credentials_watcher_job,
+        CronTrigger(minute="*/5"),
+        args=[ctx],
+        id="credentials_watcher",
         max_instances=1,
         coalesce=True,
     )
