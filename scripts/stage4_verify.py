@@ -65,17 +65,17 @@ def main() -> int:
         _print("/positions", handle_command(ctx, "/positions", []))
         _print("/signals", handle_command(ctx, "/signals", []))
 
-        # 킬스위치 토글
-        print("\n━━━ 킬스위치 상태 확인 ━━━")
-        print(f"초기: {'활성' if kill_switch.is_active() else '해제'}")
+        # 긴급 정지 토글
+        print("\n━━━ 긴급 정지 상태 확인 ━━━")
+        print(f"초기: {'켜짐' if kill_switch.is_active() else '꺼짐'}")
 
         _print("/stop", handle_command(ctx, "/stop", []))
-        print(f"/stop 후: {'활성' if kill_switch.is_active() else '해제'}")
+        print(f"/stop 후: {'켜짐' if kill_switch.is_active() else '꺼짐'}")
 
         _print("/stop (중복)", handle_command(ctx, "/stop", []))
 
         _print("/resume", handle_command(ctx, "/resume", []))
-        print(f"/resume 후: {'활성' if kill_switch.is_active() else '해제'}")
+        print(f"/resume 후: {'켜짐' if kill_switch.is_active() else '꺼짐'}")
 
         _print("/resume (중복)", handle_command(ctx, "/resume", []))
 

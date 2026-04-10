@@ -6,7 +6,14 @@ import traceback as tb_module
 from datetime import datetime
 from typing import Any
 
-from trading_bot.bot.commands import cycle_summary_keyboard
+from trading_bot.bot.commands import (
+    confidence_pct,
+    cycle_summary_keyboard,
+    decision_ko,
+    fmt_pct,
+    fmt_won,
+    mode_badge,
+)
 from trading_bot.config import Settings
 from trading_bot.kis.client import KisClient
 from trading_bot.notify import telegram
@@ -52,7 +59,7 @@ def run_cycle(
         log.exception("잔고 조회 실패 — 사이클 중단")
         telegram.send(
             settings.telegram,
-            f"🚨 잔고 조회 실패로 사이클 중단\n`{exc}`",
+            f"🚨 계좌 조회 실패로 이번 점검 중단\n`{exc}`",
         )
         return summary
 
@@ -108,12 +115,12 @@ def run_cycle(
                     decision="hold", confidence=None,
                     rule_features=json.dumps(features, ensure_ascii=False),
                     llm_model=None,
-                    llm_reasoning="prefilter: 후보 아님",
+                    llm_reasoning="1차 조건 통과 못함 (RSI/거래량 기준 미달)",
                     llm_input_tokens=None, llm_output_tokens=None,
                     llm_cost_usd=None,
                 )
                 summary["hold"] += 1
-                log.info("%s %s: hold (RSI=%.1f, vol=%.2fx)", code, name, rsi_val, vol_ratio)
+                log.info("%s %s: 관망 (RSI=%.1f, vol=%.2fx)", code, name, rsi_val, vol_ratio)
                 continue
 
             summary["candidates"] += 1
@@ -126,12 +133,12 @@ def run_cycle(
                     decision=candidate.side_hint, confidence=None,
                     rule_features=json.dumps(features, ensure_ascii=False),
                     llm_model=None,
-                    llm_reasoning="LLM 비활성 (룰베이스 결정만 기록)",
+                    llm_reasoning="AI 비활성 — 1차 조건만 통과 기록",
                     llm_input_tokens=None, llm_output_tokens=None,
                     llm_cost_usd=None,
                 )
                 summary[candidate.side_hint] += 1
-                log.info("%s %s → %s (LLM 비활성 — 주문 실행 안 함)", code, name, candidate.side_hint)
+                log.info("%s %s → %s (AI 비활성 — 주문 실행 안 함)", code, name, candidate.side_hint)
                 continue
 
             if daily_cost >= daily_limit:
@@ -273,15 +280,16 @@ def _notify_summary(
     balance_summary: dict[str, Any],
     events: list[dict[str, Any]],
 ) -> None:
-    mode = settings.kis.mode
-    mode_badge = "🔴 LIVE" if mode == "live" else "🟡 PAPER"
+    badge = mode_badge(settings.kis.mode)
     lines = [
-        f"*사이클 요약* {mode_badge} — {datetime.now():%Y-%m-%d %H:%M}",
-        f"총평가 {balance_summary.get('tot_evlu_amt', '?')}원 · 예수금 {balance_summary.get('dnca_tot_amt', '?')}원 · 전일대비 {balance_summary.get('asst_icdc_erng_rt', '?')}%",
-        f"종목 {summary['total']} / 후보 {summary['candidates']} / 에러 {summary['errors']}",
-        f"결정: buy {summary['buy']} · sell {summary['sell']} · hold {summary['hold']}",
-        f"주문: 제출 {summary['orders_submitted']} · 리스크차단 {summary['orders_rejected_by_risk']}",
-        f"LLM 비용(사이클) ${summary['cost_usd']:.4f} · 오늘 누적 ${daily_cost:.4f}",
+        f"*점검 결과* {badge} — {datetime.now():%Y-%m-%d %H:%M}",
+        f"총 자산 {fmt_won(balance_summary.get('tot_evlu_amt'))} · "
+        f"현금 {fmt_won(balance_summary.get('dnca_tot_amt'))} · "
+        f"어제 대비 {fmt_pct(balance_summary.get('asst_icdc_erng_rt'))}",
+        f"점검 종목 {summary['total']}개 / 후보 {summary['candidates']}개 / 오류 {summary['errors']}개",
+        f"판단: 구매 {summary['buy']} · 판매 {summary['sell']} · 관망 {summary['hold']}",
+        f"주문: 접수 {summary['orders_submitted']} · 안전장치 차단 {summary['orders_rejected_by_risk']}",
+        f"AI 비용(이번 점검) ${summary['cost_usd']:.4f} · 오늘 누적 ${daily_cost:.4f}",
     ]
 
     submitted = [e for e in events if e["type"] == "submitted"]
@@ -289,22 +297,26 @@ def _notify_summary(
 
     if submitted:
         lines.append("")
-        lines.append("*✅ 주문 제출*")
+        lines.append("*✅ 주문 접수*")
         for e in submitted:
+            side_ko = decision_ko(e["side"])
             side_emoji = "🟢" if e["side"] == "buy" else "🔴"
+            conf_str = confidence_pct(e["confidence"])
             lines.append(
-                f"{side_emoji} {e['name']} ({e['code']}) {e['side']} "
-                f"{e['qty']}주 @ ~{e['price']}원 conf {e['confidence']:.2f}"
+                f"{side_emoji} {e['name']} ({e['code']}) {side_ko} "
+                f"{e['qty']}주 @ 약 {int(e['price']):,}원 · 확신도 {conf_str}"
             )
             lines.append(f"  주문번호 `{e['order_no']}`")
             lines.append(f"  _{e['reasoning'][:140]}_")
 
     if rejected:
         lines.append("")
-        lines.append("*⛔ 리스크 차단*")
+        lines.append("*⛔ 안전장치가 막음*")
         for e in rejected:
+            side_ko = decision_ko(e["side"])
+            conf_str = confidence_pct(e["confidence"])
             lines.append(
-                f"- {e['name']} ({e['code']}) {e['side']} conf {e['confidence']:.2f} — {e['reason']}"
+                f"- {e['name']} ({e['code']}) {side_ko} 확신도 {conf_str} — {e['reason']}"
             )
 
     telegram.send(

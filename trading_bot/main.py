@@ -118,13 +118,13 @@ def main() -> int:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    mode_badge = "🔴 LIVE" if settings.kis.mode == "live" else "🟡 PAPER"
-    kill_note = " · ⚠️ KILL SWITCH 활성" if kill_switch.is_active() else ""
+    badge = "🔴 실전" if settings.kis.mode == "live" else "🟡 모의"
+    kill_note = " · ⚠️ 긴급 정지 켜짐" if kill_switch.is_active() else ""
     telegram.send(
         settings.telegram,
         (
-            f"*봇 기동* {mode_badge} — 사이클 {settings.cycle_minutes}분 주기 (평일 09–15시){kill_note}\n"
-            f"텔레그램 커맨드 활성. `/help` 입력으로 목록 확인."
+            f"*봇 기동* {badge} — 점검 {settings.cycle_minutes}분 주기 (평일 09–15시){kill_note}\n"
+            f"텔레그램 명령어 활성. `/help` 로 사용법 확인."
         ),
     )
     log.info("Scheduler 시작 (매 %d분)", settings.cycle_minutes)
