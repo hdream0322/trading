@@ -128,7 +128,8 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /cycle — 지금 바로 점검 한 번 돌리기
 
 *🔄 업데이트*
-/update — 지금 바로 최신 버전 확인 + 반영
+/update — 최신 버전 확인 (현재/최신 버전 표시만)
+/update confirm — 실제 업데이트 실행
 /update enable — 자동 업데이트 켜기 (매일 02:00 KST)
 /update disable — 자동 업데이트 끄기
 /update status — 자동 업데이트 상태 확인
@@ -324,31 +325,35 @@ def cmd_cycle(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 
 def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
-    """봇 업데이트 조작.
+    """봇 업데이트 조작 (2단계 확인 플로우).
 
     사용법:
-      /update              — 즉시 업데이트 확인 및 반영
+      /update              — 현재/최신 버전 표시 + 업데이트 필요 여부 안내
+      /update confirm      — 실제 업데이트 실행 (Watchtower 호출)
       /update enable       — 자동 업데이트 켜기
       /update disable      — 자동 업데이트 끄기
       /update status       — 자동 업데이트 상태 확인
     """
     if not args:
-        return _manual_update(ctx)
+        return _check_update(ctx)
 
     sub = args[0].lower()
+    if sub == "confirm":
+        return _apply_update(ctx)
     if sub == "enable":
         update_manager.enable_auto()
         return _reply(
             "✅ *자동 업데이트 켜짐*\n"
             "매일 02:00 KST 에 새 버전이 있으면 자동으로 반영됩니다.\n"
-            "지금 즉시 확인하려면 `/update` 입력."
+            "지금 확인하려면 `/update` 입력."
         )
     if sub == "disable":
         update_manager.disable_auto(reason="telegram /update disable")
         return _reply(
             "🛑 *자동 업데이트 꺼짐*\n"
             "이제 02:00 KST 자동 업데이트가 스킵됩니다.\n"
-            "수동 업데이트는 여전히 가능합니다 — `/update` 입력 시 즉시 반영.\n"
+            "수동 업데이트는 여전히 가능합니다 — `/update` 로 확인, "
+            "`/update confirm` 으로 실행.\n"
             "다시 켜려면 `/update enable`."
         )
     if sub == "status":
@@ -358,7 +363,8 @@ def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
                 "*자동 업데이트 상태*\n"
                 "• 현재: ✅ 켜짐\n"
                 "• 스케줄: 매일 02:00 KST (장외 시간)\n"
-                "• 수동 실행: `/update`\n"
+                "• 수동 확인: `/update`\n"
+                "• 수동 실행: `/update confirm`\n"
                 "• 끄기: `/update disable`"
             )
         else:
@@ -367,57 +373,101 @@ def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
                 "*자동 업데이트 상태*\n"
                 f"• 현재: 🛑 꺼짐\n"
                 f"• 꺼진 시각: `{since}`\n"
-                "• 수동 실행: `/update` (여전히 가능)\n"
+                "• 수동 확인: `/update` (여전히 가능)\n"
+                "• 수동 실행: `/update confirm`\n"
                 "• 다시 켜기: `/update enable`"
             )
 
     return _reply(
         "*업데이트 명령어*\n"
-        "`/update` — 지금 바로 업데이트 확인 + 반영\n"
+        "`/update` — 현재/최신 버전 확인 (실행 안 함)\n"
+        "`/update confirm` — 실제 업데이트 실행\n"
         "`/update enable` — 자동 업데이트 켜기\n"
         "`/update disable` — 자동 업데이트 끄기\n"
         "`/update status` — 자동 업데이트 상태 확인"
     )
 
 
-def _manual_update(ctx: BotContext) -> dict[str, Any]:
-    """GHCR digest 비교 → 차이 있을 때만 Watchtower 호출."""
-    token = ctx.settings.watchtower_http_token
+def _check_update(ctx: BotContext) -> dict[str, Any]:
+    """업데이트 확인만 하고 필요 여부를 안내. 실제 적용은 /update confirm."""
+    # 현재 버전 (Docker 이미지에 주입된 BOT_VERSION)
+    current_version = bot_version
 
-    # 1. 원격 digest 확인
+    # 최신 릴리스 버전 (GitHub Releases API)
+    latest_version: str | None = None
+    latest_err: str | None = None
     try:
-        has_update, current, remote = update_manager.check_for_update()
+        latest_version = update_manager.fetch_latest_release_version()
     except Exception as exc:
-        log.warning("digest 비교 실패, Watchtower fallback 호출: %s", exc)
-        has_update = True
-        current = update_manager.read_current_digest() or ""
-        remote = ""
+        latest_err = str(exc)
+        log.warning("최신 릴리스 버전 조회 실패: %s", exc)
 
-    # 2. 이미 최신이면 즉시 반환 (Watchtower 호출 없음)
-    if not has_update:
-        cur_short = current[7:19] if current.startswith("sha256:") else current[:12]
-        return _reply(
-            "✅ *이미 최신 버전입니다*\n\n"
-            f"현재: `{cur_short}`\n"
-            f"GHCR `:latest` 와 동일 — 추가 작업 없음.\n"
-            f"버전: `{bot_version}`"
-        )
+    # digest 비교 — 실제 업데이트 필요 여부는 이걸로 판단
+    has_update: bool | None = None
+    try:
+        has_update, _, _ = update_manager.check_for_update()
+    except Exception as exc:
+        log.warning("digest 비교 실패: %s", exc)
 
-    # 3. 새 버전 있음 → Watchtower 호출
+    lines = [
+        "*업데이트 확인*",
+        "",
+        f"현재 버전: `{current_version}`",
+        f"최신 버전: `{latest_version or '?'}`",
+    ]
+    if latest_err:
+        lines.append(f"  _최신 릴리스 조회 실패: {latest_err[:80]}_")
+    lines.append("")
+
+    if has_update is False:
+        lines.append("✅ *이미 최신 버전입니다*")
+        lines.append("추가 업데이트가 필요하지 않습니다.")
+    elif has_update is True:
+        lines.append("🆕 *새 버전이 있습니다*")
+        lines.append("")
+        lines.append("적용하려면 아래 명령어를 입력하세요:")
+        lines.append("`/update confirm`")
+        lines.append("")
+        lines.append("_Watchtower 가 새 이미지를 내려받고 봇을 재시작합니다._")
+        lines.append("_소요 시간 약 30~60초, 이 과정에서 잠시 응답이 중단됩니다._")
+    else:
+        # digest 비교 실패 — 사용자가 직접 판단
+        lines.append("❓ *업데이트 필요 여부 확인 불가*")
+        lines.append("")
+        lines.append("GHCR 연결에 문제가 있어 이미지 비교를 할 수 없습니다.")
+        lines.append("강제로 업데이트를 시도하려면 `/update confirm` 입력.")
+
+    return _reply("\n".join(lines))
+
+
+def _apply_update(ctx: BotContext) -> dict[str, Any]:
+    """/update confirm — 실제 Watchtower 호출로 업데이트 적용."""
+    token = ctx.settings.watchtower_http_token
+    current_version = bot_version
+    latest_version: str | None = None
+    try:
+        latest_version = update_manager.fetch_latest_release_version()
+    except Exception:
+        pass
+
     try:
         update_manager.trigger_update(token)
     except Exception as exc:
         return _reply(f"❌ *업데이트 요청 실패*\n`{exc}`")
 
-    cur_short = (current[7:19] if current.startswith("sha256:") else (current[:12] or "unknown"))
-    rem_short = (remote[7:19] if remote.startswith("sha256:") else (remote[:12] or "(fetching)"))
-    return _reply(
-        "🔄 *새 버전 감지 — 업데이트 시작*\n\n"
-        f"현재: `{cur_short}`\n"
-        f"신규: `{rem_short}`\n\n"
-        "Watchtower 가 새 이미지를 pull 하고 있습니다.\n"
-        "잠시 후 봇이 재시작되고 *봇 기동* 메시지가 도착합니다."
-    )
+    lines = [
+        "🔄 *업데이트 요청 전송됨*",
+        "",
+        f"현재 버전: `{current_version}`",
+        f"최신 버전: `{latest_version or '?'}`",
+        "",
+        "Watchtower 가 새 이미지를 내려받고 봇을 재시작합니다.",
+        "약 30~60초 후 *봇 기동* 메시지가 도착하면 완료입니다.",
+        "",
+        "_업데이트 필요가 없으면 Watchtower 가 '1 Scanned, 0 Updated' 알림만 전송하고 "
+        "봇은 계속 현재 버전으로 동작합니다._",
+    ]
+    return _reply("\n".join(lines))
 
 
 def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:

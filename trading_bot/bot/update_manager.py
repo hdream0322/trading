@@ -19,6 +19,7 @@ WATCHTOWER_UPDATE_URL = "http://watchtower:8080/v1/update"
 # GHCR 익명 pull 엔드포인트 (public 패키지 전용)
 GHCR_TOKEN_URL = "https://ghcr.io/token?service=ghcr.io&scope=repository:hdream0322/trading:pull"
 GHCR_MANIFEST_URL = "https://ghcr.io/v2/hdream0322/trading/manifests/latest"
+GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/hdream0322/trading/releases/latest"
 _MANIFEST_ACCEPT = ", ".join([
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.oci.image.index.v1+json",
@@ -145,6 +146,22 @@ def check_for_update() -> tuple[bool, str, str]:
     if not current:
         return True, "", remote
     return current != remote, current, remote
+
+
+def fetch_latest_release_version(timeout: float = 10.0) -> str:
+    """GitHub Releases API 에서 최신 릴리스 태그 문자열 조회.
+
+    반환 예시: '0.2.7'  ('v' prefix 는 제거)
+    """
+    resp = httpx.get(GITHUB_LATEST_RELEASE_URL, timeout=timeout)
+    if resp.status_code == 404:
+        raise RuntimeError("아직 생성된 GitHub Release 가 없습니다")
+    resp.raise_for_status()
+    data = resp.json()
+    tag = str(data.get("tag_name", "")).strip()
+    if not tag:
+        raise RuntimeError("GitHub API 응답에 tag_name 없음")
+    return tag.lstrip("vV")
 
 
 def trigger_update(token: str) -> dict[str, object]:
