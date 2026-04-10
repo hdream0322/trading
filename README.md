@@ -349,25 +349,75 @@ sudo docker compose logs --tail 50 trading-bot
 응답이 오면 NAS 의 봇이 정상 동작하는 것입니다. 응답 메시지 하단에 인라인 버튼 4개
 (`🛑 긴급 정지` `✅ 해제` `📊 내 주식` `💰 상태`) 가 붙어있어야 합니다.
 
-### 업데이트 (원클릭)
+### 업데이트
 
 코드 변경 후 `git push` 하면 GitHub Actions 가 1~3분 내에 새 이미지를 GHCR 에 올립니다.
-NAS 에 반영하는 방법 3가지 중 하나:
+NAS 반영 방법 3가지:
 
-**방법 A — Container Manager GUI (가장 쉬움)**
-1. **Container Manager** 열기
-2. **컨테이너** 탭 → `trading-bot` 클릭
-3. **동작(Action) → 재설정(Reset)** 클릭
-4. "이미지를 최신 버전으로 업데이트하시겠습니까?" 같은 확인창 → 예
+**방법 A — 🤖 자동 업데이트 (Watchtower, 기본)**
 
-**방법 B — SSH 한 줄**
+`docker-compose.yml` 에 **Watchtower** 컨테이너가 함께 포함되어 있습니다. 이게 매일
+**02:00 KST** (장 시간과 겹치지 않는 시각) 에 GHCR 에서 새 이미지를 자동 확인하고,
+있으면 알아서 pull → `trading-bot` 컨테이너 교체까지 수행합니다.
+
+- 대상: `com.centurylinklabs.watchtower.enable=true` label 이 붙은 컨테이너만
+  (= `trading-bot` 하나). 다른 컨테이너에는 절대 손대지 않습니다.
+- 알림: 업데이트가 발생하면 Telegram 으로 리포트 전송 (`*봇 자동 업데이트*` 제목).
+- 오래된 이미지: 자동 삭제 (`WATCHTOWER_CLEANUP=true`) — 디스크 절약.
+- 장 중에는 절대 동작 안 함: 02:00 KST 에만 체크하기 때문에 거래 사이클 방해 없음.
+
+이 방식의 동작 흐름:
+```
+맥북에서 git push
+  ↓
+GitHub Actions가 1~3분 내 이미지 빌드 → GHCR 업로드
+  ↓
+다음 날 02:00 KST, NAS 의 Watchtower 가 감지
+  ↓
+trading-bot 에 SIGTERM → Python 이 scheduler/KIS 깔끔하게 종료
+  ↓
+새 이미지 pull → 새 컨테이너 시작
+  ↓
+Telegram에 두 개 알림:
+  1. Watchtower: "봇 자동 업데이트 (trading-bot: 업데이트됨)"
+  2. trading-bot: "*봇 기동* 🟡 모의 — 점검 10분 주기"
+```
+
+즉 **사용자가 NAS 를 직접 건드릴 일이 거의 없습니다**. git push 하고 다음 날 아침에
+Telegram 확인하면 "업데이트 완료" 가 와 있으면 끝.
+
+> ⏱️ 지금 당장 업데이트가 필요하면 (02:00 기다리기 싫으면) 방법 B/C 를 병행 사용.
+
+**방법 B — SSH 한 줄 (즉시)**
 ```bash
 cd /volume1/docker/trading && sudo docker compose pull && sudo docker compose up -d
 ```
 
-**방법 C — DSM 작업 스케줄러 (자동 체크)**
-작업 스케줄러에서 "User-defined script" 작업을 만들어 위 SSH 명령을 주기적으로(예: 매일
-새벽 3시) 실행. 장외 시간대에 업데이트가 걸리니 안전.
+**방법 C — Container Manager GUI (즉시)**
+1. **Container Manager** 열기
+2. **컨테이너** 탭 → `trading-bot` 클릭
+3. **동작(Action) → 재설정(Reset)** 클릭
+
+### Watchtower 설정 커스터마이즈
+
+`docker-compose.yml` 의 watchtower 서비스 환경변수:
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `WATCHTOWER_SCHEDULE` | `0 0 2 * * *` | cron 6필드 (초 분 시 일 월 요일). 매일 02:00 KST |
+| `WATCHTOWER_LABEL_ENABLE` | `true` | label 붙은 컨테이너만 감시 |
+| `WATCHTOWER_CLEANUP` | `true` | 오래된 이미지 자동 삭제 |
+| `WATCHTOWER_NOTIFICATION_REPORT` | `true` | 결과를 하나의 알림으로 요약 |
+| `WATCHTOWER_NO_STARTUP_MESSAGE` | `true` | Watchtower 기동 시 알림 생략 |
+| `WATCHTOWER_NOTIFICATION_URL` | telegram 자동 주입 | 알림 채널 (shoutrrr 포맷) |
+
+**체크 주기 바꾸기 예시**:
+- 매일 새벽 3시: `0 0 3 * * *`
+- 매주 일요일 자정: `0 0 0 * * 0`
+- 30분마다 (비권장, 장중 주의): `0 */30 * * * *`
+
+**자동 업데이트 끄고 싶으면**: `docker-compose.yml` 에서 watchtower 서비스 블록 전체를
+주석 처리하거나 삭제 후 `docker compose up -d`. trading-bot 은 그대로 유지.
 
 ### 자동 재기동
 
@@ -459,12 +509,6 @@ KIS API 모의서버가 일시적으로 레이트리밋에 걸린 상태. 자동
 **`모의투자 장종료 입니다` 에러**
 KIS 모의서버는 장 시간(평일 09:00~15:30 KST) 외에는 주문을 받지 않습니다. 정상 동작.
 다음 영업일 장 시작 후 자동으로 사이클이 돕니다.
-
-### 완전 자동 업데이트 (Watchtower, 선택)
-
-코드 push → 자동 재배포까지 원하면 Watchtower 컨테이너를 하나 더 띄웁니다. 몇 분마다
-GHCR 확인해서 새 이미지 있으면 자동으로 재시작합니다. 장 중에 재시작이 걸릴 수 있어
-주의 필요. 필요시 별도 설정.
 
 ### 버전 릴리스
 

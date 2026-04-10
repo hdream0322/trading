@@ -18,3 +18,38 @@ services:
       - ./tokens:/app/tokens
       - ./config:/app/config:ro
     command: ["python", "-m", "trading_bot.main"]
+    labels:
+      # Watchtower 가 이 label=true 컨테이너만 감시/업데이트 대상으로 삼는다.
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # ─────────────────────────────────────────────────────────────
+  # 자동 업데이트 에이전트
+  # 매일 02:00 KST (장 시간과 겹치지 않음) 에 GHCR 에서 새 이미지를 확인하고
+  # 있으면 자동으로 pull → trading-bot 컨테이너 교체. 업데이트 발생 시 Telegram
+  # 알림. 다른 컨테이너에는 절대 손대지 않음 (label enable 필터).
+  # ─────────────────────────────────────────────────────────────
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: trading-bot-watchtower
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Seoul
+      # label 이 붙은 컨테이너만 감시 — trading-bot 하나만 대상
+      - WATCHTOWER_LABEL_ENABLE=true
+      # 업데이트 후 오래된 이미지는 삭제 (디스크 절약)
+      - WATCHTOWER_CLEANUP=true
+      # 기동 시 배너 알림 생략 (불필요한 푸시 방지)
+      - WATCHTOWER_NO_STARTUP_MESSAGE=true
+      # 결과는 리포트 형태로 배치 전송 (하나의 알림에 요약)
+      - WATCHTOWER_NOTIFICATION_REPORT=true
+      # cron 스케줄 (6필드: 초 분 시 일 월 요일). 매일 02:00:00 KST
+      - WATCHTOWER_SCHEDULE=0 0 2 * * *
+      # 알림 채널: shoutrrr 기반 Telegram
+      # 아래 ${} 값들은 프로젝트 루트 .env 에서 자동 치환됨 (compose interpolation).
+      # env_file 로 전체 .env 를 로드하지 않아서 KIS/Anthropic 키는 이 컨테이너에
+      # 절대 들어가지 않는다 — 보안 분리 목적.
+      - WATCHTOWER_NOTIFICATIONS=shoutrrr
+      - WATCHTOWER_NOTIFICATION_URL=telegram://${TELEGRAM_BOT_TOKEN}@telegram?chats=${TELEGRAM_CHAT_ID}
+      - WATCHTOWER_NOTIFICATION_TITLE_TAG=봇 자동 업데이트
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
