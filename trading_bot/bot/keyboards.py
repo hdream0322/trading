@@ -126,6 +126,44 @@ def _sell_confirm_keyboard(code: str, name: str, qty: int) -> dict[str, Any]:
     }
 
 
+def update_action_keyboard() -> dict[str, Any]:
+    """/update 응답에서 새 버전이 있을 때 하단에 붙는 액션 버튼."""
+    return {
+        "inline_keyboard": [[
+            {"text": "🔄 업데이트", "callback_data": "update_confirm"},
+            {"text": "✋ 현재 버전 유지", "callback_data": "update_skip"},
+        ]]
+    }
+
+
+def quiet_toggle_keyboard(active: bool) -> dict[str, Any]:
+    """/quiet (인자 없음) 응답 하단 토글 버튼."""
+    if active:
+        btn = {"text": "🔔 일반 모드로 (10분 요약 받기)", "callback_data": "quiet_off"}
+    else:
+        btn = {"text": "🔕 조용 모드로 (요약 끄기)", "callback_data": "quiet_on"}
+    return {"inline_keyboard": [[btn]]}
+
+
+def update_auto_toggle_keyboard(enabled: bool) -> dict[str, Any]:
+    """/update status 응답 하단 자동 업데이트 토글."""
+    if enabled:
+        btn = {"text": "🛑 자동 업데이트 끄기", "callback_data": "update_auto_off"}
+    else:
+        btn = {"text": "✅ 자동 업데이트 켜기", "callback_data": "update_auto_on"}
+    return {"inline_keyboard": [[btn]]}
+
+
+def restart_confirm_keyboard() -> dict[str, Any]:
+    """/restart 응답 하단 확정/취소 버튼."""
+    return {
+        "inline_keyboard": [[
+            {"text": "🔄 재시작 확정", "callback_data": "restart_confirm"},
+            {"text": "❌ 취소", "callback_data": "cancel"},
+        ]]
+    }
+
+
 def _universe_confirm_keyboard(action: str, code: str) -> dict[str, Any]:
     """action: 'add' 또는 'remove'."""
     verb = "추가" if action == "add" else "제거"

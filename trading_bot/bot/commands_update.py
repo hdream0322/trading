@@ -7,7 +7,11 @@ from typing import Any
 from trading_bot import __version__ as bot_version
 from trading_bot.bot import update_manager
 from trading_bot.bot.context import BotContext
-from trading_bot.bot.keyboards import _reply
+from trading_bot.bot.keyboards import (
+    _reply,
+    update_action_keyboard,
+    update_auto_toggle_keyboard,
+)
 
 log = logging.getLogger(__name__)
 
@@ -51,24 +55,23 @@ def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     if sub == "status":
         enabled = update_manager.is_auto_enabled()
         if enabled:
-            return _reply(
+            text = (
                 "*자동 업데이트 상태*\n"
                 "• 현재: ✅ 켜짐\n"
                 "• 스케줄: 매일 02:00 KST (장외 시간)\n"
                 "• 수동 확인: `/update`\n"
-                "• 수동 실행: `/update confirm`\n"
-                "• 끄기: `/update disable`"
+                "• 수동 실행: `/update confirm`"
             )
         else:
             since = update_manager.disabled_since() or "(시각 불명)"
-            return _reply(
+            text = (
                 "*자동 업데이트 상태*\n"
                 f"• 현재: 🛑 꺼짐\n"
                 f"• 꺼진 시각: `{since}`\n"
                 "• 수동 확인: `/update` (여전히 가능)\n"
-                "• 수동 실행: `/update confirm`\n"
-                "• 다시 켜기: `/update enable`"
+                "• 수동 실행: `/update confirm`"
             )
+        return _reply(text, reply_markup=update_auto_toggle_keyboard(enabled))
 
     return _reply(
         "*업데이트 명령어*\n"
@@ -118,11 +121,12 @@ def _check_update(ctx: BotContext) -> dict[str, Any]:
     if has_update is False:
         lines.append("✅ *이미 최신 버전이에요*")
         lines.append("지금은 업데이트할 게 없어요.")
-    elif has_update is True:
+        return _reply("\n".join(lines))
+
+    if has_update is True:
         lines.append("🆕 *새 버전이 있어요*")
         lines.append("")
-        lines.append("적용하려면 아래 명령어를 입력하세요:")
-        lines.append("`/update confirm`")
+        lines.append("아래 버튼을 누르거나 `/update confirm` 을 입력하세요.")
         lines.append("")
         lines.append("_약 30~60초 뒤 봇이 자동으로 다시 시작돼요._")
         lines.append("_그동안 잠깐 응답이 멈출 수 있어요._")
@@ -134,13 +138,13 @@ def _check_update(ctx: BotContext) -> dict[str, Any]:
             lines.append("```")
             lines.append(summary)
             lines.append("```")
-    else:
-        # digest 비교 실패 — 사용자가 직접 판단
-        lines.append("❓ *업데이트 여부를 확인할 수 없어요*")
-        lines.append("")
-        lines.append("서버 연결에 문제가 있어서 버전 비교를 못했어요.")
-        lines.append("그래도 업데이트를 시도하려면 `/update confirm` 을 입력하세요.")
+        return _reply("\n".join(lines), reply_markup=update_action_keyboard())
 
+    # digest 비교 실패 — 사용자가 직접 판단
+    lines.append("❓ *업데이트 여부를 확인할 수 없어요*")
+    lines.append("")
+    lines.append("서버 연결에 문제가 있어서 버전 비교를 못했어요.")
+    lines.append("그래도 업데이트를 시도하려면 `/update confirm` 을 입력하세요.")
     return _reply("\n".join(lines))
 
 

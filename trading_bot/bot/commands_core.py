@@ -356,10 +356,10 @@ def cmd_quiet(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         else "10분마다 사이클 요약을 받고 있습니다.\n"
         "장 시작/마감 브리핑도 함께 유지됩니다."
     )
+    from trading_bot.bot.keyboards import quiet_toggle_keyboard
     return _reply(
-        f"{status_line}\n{detail}\n\n"
-        "`/quiet on` — 10분 요약 끄기 (거래 있을 때만 알림)\n"
-        "`/quiet off` — 10분 요약 다시 켜기"
+        f"{status_line}\n{detail}",
+        reply_markup=quiet_toggle_keyboard(active),
     )
 
 

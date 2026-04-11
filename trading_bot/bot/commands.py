@@ -164,6 +164,20 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         return cmd_mode(ctx, [target])
     if data == "mode_confirm_live":
         return cmd_mode(ctx, ["live", "confirm"])
+    if data == "update_confirm":
+        return cmd_update(ctx, ["confirm"])
+    if data == "update_skip":
+        return _reply("✋ 업데이트를 건너뛰었어요. 나중에 `/update` 로 다시 확인할 수 있어요.")
+    if data == "update_auto_on":
+        return cmd_update(ctx, ["enable"])
+    if data == "update_auto_off":
+        return cmd_update(ctx, ["disable"])
+    if data == "quiet_on":
+        return cmd_quiet(ctx, ["on"])
+    if data == "quiet_off":
+        return cmd_quiet(ctx, ["off"])
+    if data == "restart_confirm":
+        return cmd_restart(ctx, ["confirm"])
     return _reply(f"모르는 버튼: `{data}`")
 
 

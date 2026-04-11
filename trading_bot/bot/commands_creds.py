@@ -270,11 +270,15 @@ def cmd_setcreds(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 def cmd_restart(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     """컨테이너 완전 재시작.
 
+    실수 방지를 위해 2단계 confirm:
+      - `/restart`         → 확정/취소 버튼 표시 (실제 동작 없음)
+      - `/restart confirm` → 즉시 SIGTERM 전송, Docker 가 컨테이너 재생성
+
     /reload 와 다른 점: /reload 는 Python 프로세스 내부에서 자격증명만 교체하지만,
     /restart 는 Python 프로세스 자체를 종료한다. docker-compose 의
     restart: unless-stopped 정책에 의해 Docker 가 자동으로 새 컨테이너를 띄운다.
 
-    동작:
+    confirm 동작:
       1. 텔레그램에 '재시작 시작' 응답 전송 (return)
       2. 응답 전송 여유를 위해 2초 대기 후 SIGTERM 전송 (백그라운드 스레드)
       3. SIGTERM → main.py 의 _shutdown 핸들러 → scheduler.shutdown →
@@ -283,6 +287,17 @@ def cmd_restart(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
     총 소요 시간: 약 10~20초 (이미지 다운로드 없이 순수 재시작).
     """
+    confirmed = bool(args) and args[0].lower() == "confirm"
+    if not confirmed:
+        from trading_bot.bot.keyboards import restart_confirm_keyboard
+        return _reply(
+            "🔄 *컨테이너 재시작 확인*\n\n"
+            "정말 봇을 재시작할까요?\n"
+            "약 10~20초 동안 텔레그램 커맨드가 응답하지 않습니다.\n\n"
+            "_/reload 는 자격증명만 교체하지만 /restart 는 프로세스 전체를 다시 띄웁니다._",
+            reply_markup=restart_confirm_keyboard(),
+        )
+
     import os
     import signal
     import threading
