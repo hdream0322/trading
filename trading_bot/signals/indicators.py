@@ -48,3 +48,32 @@ def sma(values: Sequence[float], period: int) -> float:
     if len(values) < period:
         raise ValueError(f"SMA({period}) 계산에 최소 {period}개 필요")
     return sum(values[-period:]) / period
+
+
+def atr(
+    highs: Sequence[float],
+    lows: Sequence[float],
+    closes: Sequence[float],
+    period: int = 14,
+) -> float:
+    """Wilder's ATR. 마지막 시점의 값을 반환.
+
+    True Range = max(high-low, |high-prev_close|, |low-prev_close|)
+    ATR = TR 의 Wilder 평활평균 (초기 period 개 단순평균 후 (n-1)/n 감쇠)
+    """
+    n = len(closes)
+    if n < period + 1 or len(highs) != n or len(lows) != n:
+        raise ValueError(f"ATR({period}) 계산에 최소 {period + 1}개 OHLC 필요 (현재 {n})")
+
+    trs: list[float] = []
+    for i in range(1, n):
+        h = highs[i]
+        l = lows[i]
+        pc = closes[i - 1]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+
+    atr_val = sum(trs[:period]) / period
+    for i in range(period, len(trs)):
+        atr_val = (atr_val * (period - 1) + trs[i]) / period
+    return atr_val

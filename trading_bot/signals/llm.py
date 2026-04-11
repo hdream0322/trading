@@ -84,7 +84,6 @@ class ClaudeSignalClient:
     def _build_user_message(
         self,
         features: dict[str, Any],
-        side_hint: str,
         recent_ohlcv: list[dict[str, Any]],
     ) -> str:
         recent_lines: list[str] = []
@@ -103,19 +102,16 @@ class ClaudeSignalClient:
             f"- 전일 대비: {features['change_pct']:+.2f}%\n"
             f"- RSI(14): {features['rsi']:.1f}\n"
             f"- 거래량 비율(20일 평균 대비): {features['volume_ratio']:.2f}x\n\n"
-            f"[사전필터 힌트]\n"
-            f"룰베이스 엔진이 이 종목을 '{side_hint}' 후보로 뽑았습니다. "
-            f"최종 판단은 당신이 스스로 합니다. 힌트에 얽매이지 말고 데이터만 보세요.\n\n"
-            f"[최근 10일 일봉 OHLCV]\n{recent_block}\n"
+            f"[최근 10일 일봉 OHLCV]\n{recent_block}\n\n"
+            f"위 데이터만 보고 독립적으로 판단하세요. 외부 힌트는 없습니다."
         )
 
     def decide(
         self,
         features: dict[str, Any],
-        side_hint: str,
         recent_ohlcv: list[dict[str, Any]],
     ) -> LlmDecision:
-        user_msg = self._build_user_message(features, side_hint, recent_ohlcv)
+        user_msg = self._build_user_message(features, recent_ohlcv)
 
         # 프롬프트 캐싱 — system 과 tool 정의는 매 호출 동일하므로 ephemeral 캐시 태그.
         # 동일 시스템 프롬프트·도구 정의를 연속 호출할 때 캐시 히트 → 입력 비용 약 90% 절감.

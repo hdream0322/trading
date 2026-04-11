@@ -65,6 +65,7 @@ def check_exit(
     pos: dict[str, Any],
     state: dict[str, Any],
     config: dict[str, Any],
+    dynamic_stop_loss_pct: float | None = None,
 ) -> ExitDecision:
     """단일 포지션에 대한 청산 여부 판단.
 
@@ -74,6 +75,8 @@ def check_exit(
     3. 고점 대비 하락 (trailing stop): 최고점 대비 trailing_distance_pct 하락
 
     트레일링 스톱은 손익률이 trailing_activation_pct 를 한 번이라도 넘은 이후에만 동작.
+
+    dynamic_stop_loss_pct 가 주어지면 고정 stop_loss_pct 대신 사용 (ATR 기반 동적 손절).
     """
     cur = float(pos["cur_price"])
     entry = float(state.get("entry_price") or pos["avg_price"])
@@ -85,7 +88,10 @@ def check_exit(
     pnl_pct = (cur - entry) / entry * 100
     hwm = float(state.get("high_water_mark") or cur)
 
-    stop_loss_pct = float(config.get("stop_loss_pct", 5))
+    if dynamic_stop_loss_pct is not None:
+        stop_loss_pct = float(dynamic_stop_loss_pct)
+    else:
+        stop_loss_pct = float(config.get("stop_loss_pct", 5))
     take_profit_pct = float(config.get("take_profit_pct", 15))
     trailing_activation_pct = float(config.get("trailing_activation_pct", 7))
     trailing_distance_pct = float(config.get("trailing_distance_pct", 4))

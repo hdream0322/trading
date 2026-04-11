@@ -6,6 +6,11 @@ universe:
   - {code: "035720", name: "카카오"}
   - {code: "035420", name: "NAVER"}
   - {code: "005380", name: "현대차"}
+  - {code: "005490", name: "POSCO홀딩스"}
+  - {code: "051910", name: "LG화학"}
+  - {code: "068270", name: "셀트리온"}
+  - {code: "055550", name: "신한지주"}
+  - {code: "015760", name: "한국전력"}
 
 cycle_minutes: 10
 
@@ -13,9 +18,20 @@ market_hours:
   open: "09:00"
   close: "15:30"
 
+# KIS 레이트리밋 (초당 요청 간격, 초).
+# KIS 공식 유량 정책:
+#   - 실전: 기본 20 req/s
+#     (신규 API 발급 후 3일간은 3 req/s 로 임시 제한 — 그 기간엔 live_min_interval_sec 를 0.34 로)
+#   - 모의: 기본 2 req/s (신규 제한 없음)
+# 기본값은 공식 한도 대비 안전 마진 ~10% 두고 설정.
+rate_limit:
+  live_min_interval_sec: 0.055   # ≈18 req/s (실전 한도 20 req/s 의 90%)
+  paper_min_interval_sec: 0.55   # ≈1.8 req/s (모의 한도 2 req/s 의 90%)
+
 risk:
-  max_position_per_symbol_pct: 32   # 종목당 총자산 최대 비중 (%)
-  max_concurrent_positions: 3       # 동시 보유 최대 종목 수
+  max_position_per_symbol_pct: 19.5  # 종목당 총자산 최대 비중 (%) — 5종목 × 19.5% = 97.5%
+  max_concurrent_positions: 5        # 동시 보유 최대 종목 수
+  max_per_sector: 2                  # 동일 섹터(업종) 최대 보유 종목 수 (분산 강화)
   daily_loss_limit_pct: 3           # 전일 대비 이만큼 손실 시 신규 매수 차단
   cooldown_minutes: 60              # 같은 종목 재진입까지 최소 대기
   max_orders_per_day: 6             # 일일 총 주문 건수 상한
@@ -33,16 +49,23 @@ prefilter:
   rsi_period: 14
   rsi_buy_below: 35
   rsi_sell_above: 70
-  min_volume_ratio: 1.2   # 20일 평균 대비 거래량이 1.2배 이상일 때만 후보
+  min_volume_ratio: 1.2       # 20일 평균 대비 거래량이 1.2배 이상일 때만 후보
+  trend_filter_enabled: true  # 추세 필터: 현재가가 SMA 아래면 매수 후보 제외 (떨어지는 칼날 차단)
+  trend_sma_period: 20        # 추세 판단용 이동평균선 기간 (일)
 
 # Stage 6: 보유 포지션 자동 청산 규칙
 # 매 점검마다 보유 종목 각각에 대해 아래 세 조건을 체크. 하나라도 충족하면 즉시 시장가 판매.
 # 청산 판매는 AI 판단을 거치지 않고 기계적으로 실행 (속도/신뢰성/비용).
 exit:
-  stop_loss_pct: 5          # 🛡️ 손실 차단: 손익률 -5% 이하에서 손절
+  stop_loss_pct: 5          # 🛡️ 손실 차단: 손익률 -5% 이하에서 손절 (고정 하한)
   take_profit_pct: 15       # 🎯 이익 확정: 손익률 +15% 이상에서 익절
   trailing_activation_pct: 7  # 📉 트레일링 활성: +7% 한 번 넘으면 트레일링 스톱 가동
   trailing_distance_pct: 4    # 📉 트레일링 낙폭: 고점 대비 -4% 떨어지면 판매
+  # ATR 기반 동적 손절: 변동성 큰 종목(2차전지/바이오 등) 에 정상 등락으로 손절되지 않도록
+  # 자동으로 더 넓은 손절 폭 적용. 실제 stop_loss_pct = max(고정값, ATR × mult / 현재가 × 100)
+  atr_enabled: true
+  atr_period: 14
+  atr_multiplier: 1.5
   # 예시:
   #   구매 200,000원 → 214,000원(+7%) 기록 → 현재 205,440원(+2.7%, 고점 대비 -4%)
   #   → 트레일링 발동, 전량 판매

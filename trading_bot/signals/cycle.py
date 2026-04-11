@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import traceback as tb_module
-from datetime import datetime
+from datetime import datetime, time as dtime
 from typing import Any
 
 from trading_bot.bot.commands import (
@@ -28,6 +29,57 @@ log = logging.getLogger(__name__)
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _is_entry_restricted(now: datetime | None = None) -> tuple[bool, str]:
+    """장 시작/마감 변동성 큰 구간엔 신규 매수 차단.
+
+    - 09:00~09:10: 호가 형성 직후 변동성 큼
+    - 15:20~15:30: 동시호가 직전 마감 변동성 큼
+
+    청산(손절/익절/트레일링) 은 이 시간대에도 그대로 실행.
+    """
+    now = now or datetime.now()
+    t = now.time()
+    if dtime(9, 0) <= t < dtime(9, 10):
+        return True, "장 시작 변동성 구간 (09:00~09:10) — 신규 매수 차단"
+    if dtime(15, 20) <= t <= dtime(15, 30):
+        return True, "장 마감 변동성 구간 (15:20~15:30) — 신규 매수 차단"
+    return False, ""
+
+
+def _compute_dynamic_stop_loss_pct(
+    ohlcv: list[dict[str, Any]],
+    current_price: float,
+    exit_cfg: dict[str, Any],
+) -> float:
+    """ATR 기반 동적 손절 비율 계산.
+
+    dynamic = ATR × multiplier / 현재가 × 100
+    최종 stop_loss_pct = max(고정값, dynamic)
+
+    변동성 작은 종목은 고정값이 우세, 변동성 큰 종목은 ATR 값이 우세.
+    """
+    fixed = float(exit_cfg.get("stop_loss_pct", 5))
+    if not bool(exit_cfg.get("atr_enabled", True)):
+        return fixed
+
+    period = int(exit_cfg.get("atr_period", 14))
+    mult = float(exit_cfg.get("atr_multiplier", 1.5))
+    if len(ohlcv) < period + 1 or current_price <= 0:
+        return fixed
+
+    try:
+        highs = [c["high"] for c in ohlcv]
+        lows = [c["low"] for c in ohlcv]
+        closes = [c["close"] for c in ohlcv]
+        atr_val = indicators.atr(highs, lows, closes, period=period)
+    except Exception as exc:
+        log.warning("ATR 계산 실패 — 고정 손절 사용: %s", exc)
+        return fixed
+
+    dynamic = atr_val * mult / current_price * 100.0
+    return max(fixed, dynamic)
 
 
 def run_cycle(
@@ -89,13 +141,38 @@ def run_cycle(
     threshold = float(settings.llm.get("confidence_threshold", 0.75))
     executed_events: list[dict[str, Any]] = list(exit_events)
 
-    for item in settings.universe:
+    # 장 시작/마감 변동성 구간 — 신규 매수 차단 (청산은 위에서 이미 처리 완료)
+    entry_restricted, entry_restricted_reason = _is_entry_restricted()
+    if entry_restricted:
+        log.info("신규 매수 차단: %s", entry_restricted_reason)
+
+    # 섹터 분산용 맵 — universe 에 박힌 sector 필드로 {code: sector} 작성 후
+    # 현재 보유 종목을 섹터별로 카운트. 매수 후보 각각에 대해 risk.check 로 전달.
+    from trading_bot.bot.universe_helper import code_to_sector_map, count_holdings_by_sector
+    sector_map = code_to_sector_map(settings.universe)
+    holdings_by_sector = count_holdings_by_sector(holdings, sector_map)
+    if holdings_by_sector:
+        log.info("현재 섹터별 보유: %s", holdings_by_sector)
+
+    # 유니버스 셔플 — LLM 일일 비용 한도 도달 시 종목 순서 편향 제거
+    # seed 를 로깅해 두면 동일 순서 재현해서 디버깅 가능
+    shuffle_seed = int(datetime.now().timestamp() * 1000) & 0xFFFFFFFF
+    rng = random.Random(shuffle_seed)
+    universe_order = list(settings.universe)
+    rng.shuffle(universe_order)
+    log.info(
+        "유니버스 셔플 seed=%d 순서=%s",
+        shuffle_seed,
+        [str(u["code"]) for u in universe_order],
+    )
+
+    for item in universe_order:
         code = str(item["code"])
         name = str(item["name"])
         summary["total"] += 1
 
         try:
-            ohlcv = kis.get_daily_ohlcv(code, days=30)
+            ohlcv = kis.get_daily_ohlcv(code, days=40)
             if len(ohlcv) < 20:
                 log.warning("%s %s: 캔들 부족 (%d개)", code, name, len(ohlcv))
                 summary["errors"] += 1
@@ -111,6 +188,15 @@ def run_cycle(
             prev_close = closes[-2] if len(closes) >= 2 else current_price
             change_pct = ((current_price - prev_close) / prev_close * 100.0) if prev_close else 0.0
 
+            # 추세 필터용 SMA — prefilter 가 읽음
+            trend_period = int(settings.prefilter.get("trend_sma_period", 20))
+            sma_trend: float | None = None
+            if len(closes) >= trend_period:
+                try:
+                    sma_trend = indicators.sma(closes, period=trend_period)
+                except Exception:
+                    sma_trend = None
+
             features: dict[str, Any] = {
                 "code": code,
                 "name": name,
@@ -119,6 +205,7 @@ def run_cycle(
                 "change_pct": change_pct,
                 "rsi": rsi_val,
                 "volume_ratio": vol_ratio,
+                "sma_trend": sma_trend,
             }
 
             candidate = prefilter.evaluate(features, settings.prefilter)
@@ -161,9 +248,23 @@ def run_cycle(
                 summary["errors"] += 1
                 continue
 
-            decision = llm.decide(features, candidate.side_hint, ohlcv)
+            decision = llm.decide(features, ohlcv)
             daily_cost += decision.cost_usd
             summary["cost_usd"] += decision.cost_usd
+
+            # 교차검증 태그 — prefilter 와 LLM 의 독립 판단이 엇갈린 경우를
+            # DB(llm_reasoning) 에 태그로 남겨 사후 분석 가능하게 한다.
+            # - DIRECTION_CONFLICT: prefilter=buy 인데 LLM=sell 같은 정반대 판단
+            # - LLM_HOLD: prefilter 는 후보로 뽑았는데 LLM 이 관망 선택 (보수적)
+            cross_tag = ""
+            if decision.decision != candidate.side_hint:
+                if decision.decision == "hold":
+                    cross_tag = f"[LLM_HOLD vs prefilter_{candidate.side_hint}] "
+                else:
+                    cross_tag = (
+                        f"[DIRECTION_CONFLICT prefilter={candidate.side_hint} "
+                        f"llm={decision.decision}] "
+                    )
 
             repo.insert_signal(
                 ts=_now_iso(),
@@ -172,7 +273,7 @@ def run_cycle(
                 confidence=decision.confidence,
                 rule_features=json.dumps(features, ensure_ascii=False),
                 llm_model=decision.model,
-                llm_reasoning=decision.reasoning,
+                llm_reasoning=cross_tag + decision.reasoning,
                 llm_input_tokens=decision.input_tokens,
                 llm_output_tokens=decision.output_tokens,
                 llm_cost_usd=decision.cost_usd,
@@ -180,13 +281,44 @@ def run_cycle(
             summary[decision.decision] += 1
 
             log.info(
-                "%s %s → %s (conf=%.2f, cost=$%.4f) %s",
+                "%s %s → %s (conf=%.2f, cost=$%.4f) %s%s",
                 code, name, decision.decision, decision.confidence,
-                decision.cost_usd, decision.reasoning[:100],
+                decision.cost_usd, cross_tag, decision.reasoning[:100],
             )
 
             # 시그널 발효 조건: buy/sell + confidence >= threshold
             if decision.decision == "hold" or decision.confidence < threshold:
+                continue
+
+            # 교차검증 실패 시 주문 생략 (태그는 이미 DB 에 기록됨)
+            if cross_tag:
+                log.info(
+                    "%s %s 교차검증 실패 — 주문 생략 %s",
+                    code, name, cross_tag.strip(),
+                )
+                continue
+
+            # 장 시작/마감 변동성 구간엔 신규 매수만 차단 (판매는 허용)
+            if entry_restricted and decision.decision == "buy":
+                log.info("%s %s 신규 매수 차단: %s", code, name, entry_restricted_reason)
+                summary["orders_rejected_by_risk"] += 1
+                repo.insert_order(
+                    ts=_now_iso(),
+                    code=code, name=name, side=decision.decision,
+                    qty=0, price=None,
+                    mode=settings.kis.mode,
+                    kis_order_no=None,
+                    status="rejected",
+                    raw_response=None,
+                    reason=entry_restricted_reason,
+                )
+                executed_events.append({
+                    "type": "rejected",
+                    "code": code, "name": name,
+                    "side": decision.decision,
+                    "reason": entry_restricted_reason,
+                    "confidence": decision.confidence,
+                })
                 continue
 
             # 리스크 게이트
@@ -197,6 +329,8 @@ def run_cycle(
                 current_price=current_price,
                 balance_summary=balance_summary,
                 holdings=holdings,
+                candidate_sector=sector_map.get(code) or None,
+                holdings_by_sector=holdings_by_sector,
             )
 
             if not rd.allowed:
@@ -282,10 +416,17 @@ def run_cycle(
                 traceback=tb_module.format_exc(),
             )
 
-    # 체결 추적 — 이번 사이클이나 직전 사이클에서 제출한 주문의 체결 여부를
-    # KIS 당일 체결 조회로 확인해 DB 상태 업데이트 (submitted → filled/partial/cancelled).
+    # 체결 추적 — 이번 사이클에 submitted 상태 주문이 있으면 30초 대기 후
+    # KIS 당일 체결 조회로 일괄 확인. 주문이 여러 건이어도 총 30초.
+    # 미체결 매수는 자동 취소, 미체결 판매는 계속 대기.
     # 실패해도 사이클 요약은 계속 보낸다.
+    fill_result: dict[str, int] | None = None
     try:
+        submitted_in_cycle = summary.get("orders_submitted", 0) + summary.get("exits_executed", 0)
+        if submitted_in_cycle > 0:
+            import time as _time
+            log.info("체결 확인 대기 중 — 30초…")
+            _time.sleep(30)
         from trading_bot.signals import fill_tracker
         fill_result = fill_tracker.reconcile_pending_orders(kis)
         if fill_result["checked"] > 0:
@@ -293,7 +434,10 @@ def run_cycle(
     except Exception:
         log.exception("체결 추적 실패")
 
-    _notify_summary(settings, summary, daily_cost, threshold, balance_summary, executed_events)
+    _notify_summary(
+        settings, summary, daily_cost, threshold,
+        balance_summary, executed_events, fill_result,
+    )
     log.info("=== 사이클 종료: %s ===", summary)
     return summary
 
@@ -317,8 +461,9 @@ def _run_exit_checks(
 
     # 2. 각 포지션에 대해:
     #    a. high_water_mark 갱신 (+ trailing_active 전환)
-    #    b. 청산 조건 검사
-    #    c. 조건 충족 시 즉시 시장가 판매
+    #    b. ATR 기반 동적 손절 임계값 계산
+    #    c. 청산 조건 검사
+    #    d. 조건 충족 시 즉시 시장가 판매
     for code, pos in list(holdings.items()):
         state = states.get(code)
         if state is None:
@@ -332,7 +477,18 @@ def _run_exit_checks(
         state["high_water_mark"] = new_hwm
         state["trailing_active"] = new_trailing
 
-        decision = exit_strategy.check_exit(pos, state, exit_cfg)
+        # ATR 기반 동적 손절 — 변동성 큰 종목일수록 더 넓은 손절 폭 자동 적용
+        dynamic_stop_pct: float | None = None
+        if bool(exit_cfg.get("atr_enabled", True)):
+            try:
+                pos_ohlcv = kis.get_daily_ohlcv(code, days=40)
+                dynamic_stop_pct = _compute_dynamic_stop_loss_pct(
+                    pos_ohlcv, float(pos["cur_price"]), exit_cfg,
+                )
+            except Exception as exc:
+                log.warning("%s ATR 조회 실패 — 고정 손절 사용: %s", code, exc)
+
+        decision = exit_strategy.check_exit(pos, state, exit_cfg, dynamic_stop_pct)
         if not decision.should_exit:
             continue
 
@@ -418,6 +574,7 @@ def _notify_summary(
     threshold: float,
     balance_summary: dict[str, Any],
     events: list[dict[str, Any]],
+    fill_result: dict[str, int] | None = None,
 ) -> None:
     # 조용 모드(/quiet on) 가 켜져 있으면 hold-only 사이클은 스킵.
     # 꺼져 있으면 hold 여도 10분마다 무조건 요약을 전송한다.
@@ -485,6 +642,27 @@ def _notify_summary(
             lines.append(
                 f"- {e['name']} ({e['code']}) {side_ko} 확신도 {conf_str} — {e['reason']}"
             )
+
+    # 체결 확인 결과 — 이번 사이클에 주문이 있었고 30초 뒤 조회했을 때만 표시
+    if fill_result and fill_result.get("checked", 0) > 0:
+        filled = fill_result.get("filled", 0)
+        partial = fill_result.get("partial", 0)
+        auto_cancelled = fill_result.get("auto_cancelled", 0)
+        cancelled = fill_result.get("cancelled", 0)
+        if filled or partial or auto_cancelled or cancelled:
+            lines.append("")
+            lines.append("*🧾 체결 확인 (30초 후 조회)*")
+            if filled:
+                lines.append(f"- ✅ 완전 체결 {filled}건")
+            if partial:
+                lines.append(f"- ⚠️ 부분 체결 {partial}건")
+            if cancelled:
+                lines.append(f"- ❌ 이미 취소 {cancelled}건")
+            if auto_cancelled:
+                lines.append(
+                    f"- 🔁 미체결 매수 자동 취소 {auto_cancelled}건 "
+                    f"(다음 점검에서 재판단)"
+                )
 
     telegram.send(
         settings.telegram,

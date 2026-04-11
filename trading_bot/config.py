@@ -71,6 +71,7 @@ class Settings:
     llm: dict[str, Any]
     prefilter: dict[str, Any]
     exit_rules: dict[str, Any]   # Stage 6: 손절/익절/트레일링 스톱
+    rate_limit: dict[str, Any]   # KIS API throttle 간격 (초) — live/paper 별
 
 
 def _require(name: str) -> str:
@@ -98,7 +99,8 @@ def _read_mode_override() -> str | None:
 def load_universe_override() -> list[dict[str, str]] | None:
     """data/universe.json 이 있으면 읽어서 리스트로 반환, 없으면 None.
 
-    포맷은 settings.yaml 의 universe 블록과 동일한 `[{code, name}, ...]`.
+    포맷은 settings.yaml 의 universe 블록과 동일한 `[{code, name, sector?}, ...]`.
+    sector 는 선택 필드 (기동 시 자동 백필 대상).
     파손된 파일은 경고 로그 후 None 을 리턴해 settings.yaml 기본값으로 폴백.
     """
     if not UNIVERSE_OVERRIDE_FILE.exists():
@@ -117,13 +119,21 @@ def load_universe_override() -> list[dict[str, str]] | None:
             continue
         code = str(item.get("code", "")).strip()
         name = str(item.get("name", "")).strip()
-        if code and name:
-            result.append({"code": code, "name": name})
+        if not (code and name):
+            continue
+        entry: dict[str, str] = {"code": code, "name": name}
+        sector = str(item.get("sector", "")).strip()
+        if sector:
+            entry["sector"] = sector
+        result.append(entry)
     return result or None
 
 
 def save_universe_override(universe: list[dict[str, str]]) -> None:
-    """universe 리스트를 data/universe.json 에 저장 (파일 덮어쓰기)."""
+    """universe 리스트를 data/universe.json 에 저장 (파일 덮어쓰기).
+
+    sector 필드가 있으면 그대로 보존.
+    """
     UNIVERSE_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
     UNIVERSE_OVERRIDE_FILE.write_text(
         json.dumps(universe, ensure_ascii=False, indent=2) + "\n",
@@ -243,4 +253,5 @@ def load_settings() -> Settings:
         llm=raw.get("llm", {}),
         prefilter=raw.get("prefilter", {}),
         exit_rules=raw.get("exit", {}),
+        rate_limit=raw.get("rate_limit", {}),
     )

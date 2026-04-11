@@ -26,6 +26,7 @@ class RiskManager:
         risk = settings.risk or {}
         self.max_pos_pct = float(risk.get("max_position_per_symbol_pct", 20)) / 100.0
         self.max_concurrent = int(risk.get("max_concurrent_positions", 5))
+        self.max_per_sector = int(risk.get("max_per_sector", 2))
         self.daily_loss_limit_pct = float(risk.get("daily_loss_limit_pct", 3))
         self.cooldown_minutes = int(risk.get("cooldown_minutes", 30))
         self.max_orders_per_day = int(risk.get("max_orders_per_day", 10))
@@ -39,6 +40,8 @@ class RiskManager:
         balance_summary: dict[str, Any],
         holdings: dict[str, dict[str, Any]],
         is_exit: bool = False,
+        candidate_sector: str | None = None,
+        holdings_by_sector: dict[str, int] | None = None,
     ) -> RiskDecision:
         """단일 시그널에 대한 게이트 검사. 통과 시 주문 수량 포함 반환.
 
@@ -107,6 +110,17 @@ class RiskManager:
                 False,
                 f"동시에 갖고 있는 주식 수 제한 ({current_positions}/{self.max_concurrent})",
             )
+
+        # 6b-2. 섹터(업종) 분산 한도 — 같은 업종이 max_per_sector 개 이상이면 차단.
+        # candidate_sector 또는 holdings_by_sector 가 없으면 게이트 우회 (sector 미분류).
+        if candidate_sector and holdings_by_sector is not None:
+            held_in_sector = int(holdings_by_sector.get(candidate_sector, 0))
+            if held_in_sector >= self.max_per_sector:
+                return RiskDecision(
+                    False,
+                    f"같은 업종({candidate_sector}) 보유 한도 "
+                    f"({held_in_sector}/{self.max_per_sector})",
+                )
 
         # 6c. 포지션 사이징
         tot_eval = float(balance_summary.get("tot_evlu_amt") or 0)   # 총 자산
