@@ -11,5 +11,5 @@ from __future__ import annotations
 
 import os
 
-_LOCAL_VERSION = "0.3.0-dev"
+_LOCAL_VERSION = "0.3.1-dev"
 __version__ = os.environ.get("BOT_VERSION", _LOCAL_VERSION).strip() or _LOCAL_VERSION

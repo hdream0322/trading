@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from trading_bot.bot import quiet_mode
 from trading_bot.bot.commands import decision_ko, fmt_pct, fmt_won, mode_badge
 from trading_bot.config import Settings
 from trading_bot.kis.client import KisClient
@@ -17,13 +16,8 @@ log = logging.getLogger(__name__)
 def send_open_briefing(settings: Settings, kis: KisClient) -> None:
     """장 시작 브리핑 — 평일 09:00 KST.
 
-    조용 모드(data/QUIET_MODE) 활성 시 전송 생략.
-    잔고 / 킬스위치 / 보유종목 요약을 보낸다.
+    조용 모드(/quiet) 와 무관하게 매일 전송. 잔고 / 킬스위치 / 보유종목 요약.
     """
-    if quiet_mode.is_active():
-        log.info("조용 모드 — 장 시작 브리핑 스킵")
-        return
-
     badge = mode_badge(settings.kis.mode)
     try:
         balance = kis.get_balance()
@@ -67,13 +61,9 @@ def send_open_briefing(settings: Settings, kis: KisClient) -> None:
 def send_close_briefing(settings: Settings, kis: KisClient) -> None:
     """장 마감 브리핑 — 평일 15:35 KST.
 
-    조용 모드 활성 시 전송 생략.
+    조용 모드와 무관하게 매일 전송.
     오늘 처리된 주문 내역 + 누적 LLM 비용 + 잔고 요약.
     """
-    if quiet_mode.is_active():
-        log.info("조용 모드 — 장 마감 브리핑 스킵")
-        return
-
     badge = mode_badge(settings.kis.mode)
     try:
         balance = kis.get_balance()

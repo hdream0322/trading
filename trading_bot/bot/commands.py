@@ -43,7 +43,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("about", "봇 버전 및 전체 설정"),
     ("stop", "🛑 긴급 정지 (새로 구매 차단)"),
     ("resume", "✅ 긴급 정지 풀기"),
-    ("quiet", "🔕 조용 모드 토글 (장 시작/마감 브리핑 끔)"),
+    ("quiet", "🔕 조용 모드 토글 (10분 사이클 요약 끔)"),
     ("sell", "특정 종목 전부 팔기 (확인 필요)"),
     ("cycle", "지금 바로 점검 실행"),
     ("update", "최신 버전 확인"),
@@ -265,7 +265,7 @@ HELP_TEXT = """*자동매매 봇 사용법*
 *⚙️ 조작*
 /stop — 🛑 긴급 정지 (새로 구매 안 함)
 /resume — ✅ 긴급 정지 풀기
-/quiet — 🔕 조용 모드 (장 시작/마감 브리핑 끔, 주문·에러는 그대로)
+/quiet — 🔕 조용 모드 (10분 사이클 요약 끔, 거래/에러는 그대로)
 /sell — 보유 종목 목록에서 선택해 판매
 /sell 005930 — 코드 직접 지정 판매
 /cycle — 지금 바로 점검 한 번 돌리기
@@ -738,13 +738,14 @@ def cmd_resume(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 
 def cmd_quiet(ctx: BotContext, args: list[str]) -> dict[str, Any]:
-    """조용 모드 토글.
+    """조용 모드 토글 — 10분 사이클 요약 알림 on/off.
 
     - 인자 없음: 현재 상태 안내
-    - `/quiet on`: 조용 모드 켜기 (장 시작/마감 브리핑 끔)
-    - `/quiet off`: 조용 모드 끄기
+    - `/quiet on`: 조용 모드 켜기 (hold-only 사이클 요약은 스킵,
+                  거래/청산/차단/에러 있을 때만 알림)
+    - `/quiet off`: 조용 모드 끄기 (10분마다 hold 여도 요약 전송 — 기본값)
 
-    조용 모드라도 주문/청산/차단/에러 알림은 계속 전송된다.
+    장 시작(09:00) · 장 마감(15:35) 브리핑은 조용 모드와 무관하게 항상 전송.
     """
     sub = (args[0].strip().lower() if args else "").strip()
     active = quiet_mode.is_active()
@@ -755,9 +756,10 @@ def cmd_quiet(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         quiet_mode.activate(reason="telegram /quiet on")
         return _reply(
             "🔕 *조용 모드 켜짐*\n"
-            "장 시작(09:00) · 장 마감(15:35) 브리핑을 끕니다.\n"
-            "구매 / 판매 / 자동 청산 / 차단 / 에러 알림은 그대로 옵니다.\n\n"
-            "`/quiet off` 로 다시 켤 수 있습니다."
+            "10분마다 오던 사이클 요약을 끕니다.\n"
+            "구매 / 판매 / 자동 청산 / 차단 / 에러가 있을 때만 알림이 옵니다.\n"
+            "장 시작/마감 브리핑은 그대로 유지됩니다.\n\n"
+            "`/quiet off` 로 다시 10분 요약을 받을 수 있습니다."
         )
 
     if sub in ("off", "끄기", "해제"):
@@ -766,20 +768,22 @@ def cmd_quiet(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         quiet_mode.deactivate()
         return _reply(
             "🔔 *조용 모드 꺼짐*\n"
-            "내일부터 장 시작/마감 브리핑이 다시 옵니다."
+            "다시 10분마다 사이클 요약이 전송됩니다."
         )
 
     status_line = "🔕 *조용 모드 켜짐*" if active else "🔔 *일반 모드*"
     detail = (
-        "장 시작/마감 브리핑이 꺼져 있습니다.\n"
-        "주문·청산·차단·에러 알림은 계속 전송됩니다."
+        "10분 사이클 요약이 꺼져 있습니다.\n"
+        "거래·청산·차단·에러가 있을 때만 알림이 옵니다.\n"
+        "장 시작/마감 브리핑은 그대로 유지됩니다."
         if active
-        else "장 시작(09:00)과 장 마감(15:35)에 브리핑을 보내드려요."
+        else "10분마다 사이클 요약을 받고 있습니다.\n"
+        "장 시작/마감 브리핑도 함께 유지됩니다."
     )
     return _reply(
         f"{status_line}\n{detail}\n\n"
-        "`/quiet on` — 브리핑 끄기\n"
-        "`/quiet off` — 브리핑 다시 켜기"
+        "`/quiet on` — 10분 요약 끄기 (거래 있을 때만 알림)\n"
+        "`/quiet off` — 10분 요약 다시 켜기"
     )
 
 
