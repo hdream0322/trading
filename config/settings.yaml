@@ -40,7 +40,8 @@ llm:
   model: "claude-haiku-4-5-20251001"
   temperature: 0
   confidence_threshold: 0.75
-  daily_cost_limit_usd: 5
+  daily_cost_limit_usd: 3      # 하드 한도: 도달 시 그날 LLM 호출 전면 차단 + 텔레그램 알림
+  daily_cost_warn_usd: 1.0     # 소프트 경고: 누적 도달 시 텔레그램 1회 조기 경고 (차단 없음)
   # Anthropic 가격 ($/MTok). 모델 교체하면 함께 업데이트.
   input_price_per_mtok: 1.0
   output_price_per_mtok: 5.0

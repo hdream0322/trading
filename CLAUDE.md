@@ -155,6 +155,15 @@ PYTHONPATH=. .venv/bin/python scripts/stage6_verify.py  # 청산 전략
   교체 완료 후에만 응답 (30~60초). `httpx.ReadTimeout` 을 **성공 (처리 중)** 으로
   해석해야 함. `update_manager.trigger_update` 에 이미 반영됨.
 
+- **LLM 모델 교체 시 단가 동기화 누락.** Anthropic API 응답은 **토큰 수만** 주고 비용은
+  안 준다. 봇이 `signals/llm.py` 에서 `settings.yaml llm.input_price_per_mtok` /
+  `output_price_per_mtok` 로 직접 곱해 SQLite `signals.llm_cost_usd` 에 적재 →
+  `repo.today_llm_cost_usd()` 가 합산해 `daily_cost_limit_usd` 게이트와 `/cost` /
+  브리핑에 노출. **`llm.model` 만 바꾸고 단가를 안 바꾸면** 누적 비용이 실제와 어긋나
+  한도가 헐거워지거나 빡세짐. 모델 교체 PR 에는 반드시 `input_price_per_mtok` /
+  `output_price_per_mtok` 동시 수정. 캐시 1024 토큰 미달 폴백도 모델별로 다를 수 있어
+  `llm.py` 캐시 주석도 함께 점검.
+
 ## 언어·스타일 규칙
 
 - **사용자 대면 텍스트는 한국어 쉬운 말** (토스 증권 스타일): 매수/매도 → 구매/판매,

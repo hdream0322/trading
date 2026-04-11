@@ -20,7 +20,7 @@ from trading_bot.kis.client import KisClient
 from trading_bot.notify import telegram
 from trading_bot.risk import kill_switch
 from trading_bot.risk.manager import RiskDecision, RiskManager
-from trading_bot.signals import exit_strategy, indicators, prefilter
+from trading_bot.signals import cost_alert, exit_strategy, indicators, prefilter
 from trading_bot.signals.llm import ClaudeSignalClient, LlmDecision
 from trading_bot.store import repo
 
@@ -99,8 +99,12 @@ def run_cycle(
     }
 
     daily_cost = repo.today_llm_cost_usd()
-    daily_limit = float(settings.llm.get("daily_cost_limit_usd", 5.0))
-    log.info("오늘 LLM 누적 비용: $%.4f / 한도 $%.2f", daily_cost, daily_limit)
+    daily_limit = float(settings.llm.get("daily_cost_limit_usd", 3.0))
+    daily_warn = float(settings.llm.get("daily_cost_warn_usd", 1.0))
+    log.info(
+        "오늘 LLM 누적 비용: $%.4f / 경고 $%.2f / 한도 $%.2f",
+        daily_cost, daily_warn, daily_limit,
+    )
     log.info("킬스위치: %s", "활성" if kill_switch.is_active() else "비활성")
 
     # 1. 잔고 스냅샷 (사이클 시작 시 1회)
@@ -245,12 +249,14 @@ def run_cycle(
 
             if daily_cost >= daily_limit:
                 log.warning("일일 LLM 비용 한도($%.2f) 도달, %s 스킵", daily_limit, code)
+                cost_alert.maybe_alert_limit(daily_cost, daily_limit, settings.telegram)
                 summary["errors"] += 1
                 continue
 
             decision = llm.decide(features, ohlcv)
             daily_cost += decision.cost_usd
             summary["cost_usd"] += decision.cost_usd
+            cost_alert.maybe_warn(daily_cost, daily_warn, daily_limit, settings.telegram)
 
             # 교차검증 태그 — prefilter 와 LLM 의 독립 판단이 엇갈린 경우를
             # DB(llm_reasoning) 에 태그로 남겨 사후 분석 가능하게 한다.
