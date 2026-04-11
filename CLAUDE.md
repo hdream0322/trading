@@ -52,18 +52,37 @@ python3 -m compileall -q trading_bot/
 1. **잔고 조회** — KIS `inquire-balance` (현재 모드 서버)
 2. **position_state 동기화** — 신규/청산된 포지션 반영, high_water_mark 갱신
 3. **자동 청산 체크** (보유 포지션 각각)
-   - 손절 (-5%), 익절 (+15%), 트레일링 스톱 (+7% 활성 / 고점 대비 -4%)
-   - AI 판단 없이 기계적 규칙으로 즉시 시장가 판매
-4. **유니버스 스캔** (새 진입 검토) — 종목당:
-   - 일봉 OHLCV 조회 (실전 서버 강제)
-   - RSI + 거래량 비율 계산
-   - **1차 게이트**: 룰베이스 prefilter (RSI + 거래량)
+   - 손절(동적): `stop_loss_pct = max(5, ATR × 1.5 / 현재가 × 100)` (양수 퍼센트).
+     `check_exit` 에서 `pnl_pct <= -stop_loss_pct` 로 비교.
+     → 대형주는 고정 5% 유지, 변동성 큰 종목은 자동으로 더 넓은 손절 폭 적용.
+     예) ATR=2000, 가격=25000 → dynamic=12 → stop_loss_pct=12 → −12% 에서 손절.
+   - 익절 (+15%), 트레일링 스톱 (+7% 활성 / 고점 대비 -4%)
+   - AI 판단 없이 기계적 규칙으로 즉시 시장가 판매 (장 시작/마감 변동성 구간에도 실행)
+4. **장 시작/마감 신규 매수 차단** — 09:00~09:10, 15:20~15:30 구간은 호가 형성/마감 변동성
+   큼 → 신규 매수만 차단, 청산은 그대로 허용
+5. **유니버스 셔플** — `random.shuffle(universe)` 로 종목 순서 편향 제거
+   (일일 LLM 비용 한도 도달 시 특정 종목만 매번 스킵되는 상황 방지)
+6. **유니버스 스캔** (새 진입 검토) — 종목당:
+   - 일봉 OHLCV 40개 조회 (실전 서버 강제)
+   - RSI + 거래량 비율 + SMA(20) 계산
+   - **1차 게이트**: 룰베이스 prefilter
+     - buy: `RSI < 35` AND `거래량 ≥ 1.2x` AND **`현재가 > SMA20` (추세 필터)**
+     - sell: `RSI > 70` AND `거래량 ≥ 1.2x`
+     - 추세 필터는 "떨어지는 칼날" (하락 추세 중 반복 매수) 차단
    - **2차 게이트**: Claude LLM tool_use 구조화 판단 (decision + confidence + reasoning)
+     - **side_hint 미전달** — LLM 이 독립 판단 (확증 편향 제거)
    - **3차 게이트**: confidence >= 0.75 임계값
+   - **3.5차 게이트**: prefilter side 와 LLM decision 교차검증 — 불일치 시 reject
    - **4차 게이트**: 리스크 매니저 7단계
-5. **주문 실행** (시장가) → DB 기록 → Telegram 알림
+7. **주문 실행** (시장가) → DB 기록 → Telegram 알림
+8. **체결 확인** (v0.5.0) — 이번 사이클에 제출된 주문이 있으면 **30초 일괄 대기**
+   후 KIS `inquire-daily-ccld` 로 상태 확인.
+   - 완전 체결 → `status=filled` + 평균가 기록
+   - 부분 체결 → `status=partial` (다음 사이클 재확인)
+   - 미체결 매수 → **자동 취소** (`cancel_order`, 다음 사이클 재판단)
+   - 미체결 판매 → **계속 대기** (손절/청산이라 강제 취소 안 함)
 
-### 리스크 매니저 7단계 (`risk/manager.py`)
+### 리스크 매니저 단계 (`risk/manager.py`)
 
 1. side 검증 (buy/sell 만)
 2. 킬 스위치 (구매만 차단, 판매는 허용)
@@ -71,9 +90,12 @@ python3 -m compileall -q trading_bot/
 4. 일일 손실 한도 (매수만)
 5. 종목별 쿨다운
 6. 중복 진입 차단
-7. 동시 보유 종목 수 + 포지션 사이징
+7. 동시 보유 종목 수
+8. **섹터(업종) 분산 한도** (v0.5.0) — universe 에 박힌 `sector` 로 현재 보유
+   종목의 섹터별 카운트를 계산, 동일 섹터 `max_per_sector` (기본 2) 도달 시 차단
+9. 포지션 사이징
 
-### APScheduler 크론 작업 9개 (`main.py`)
+### APScheduler 크론 작업 10개 (`main.py`)
 
 1. **cycle_job** — 평일 09:00~15:30 KST 매 `cycle_minutes` (기본 10분) 점검
 2. **auto_update_job** — 매일 02:00 KST 자동 업데이트 체크 (Watchtower HTTP API 호출)
@@ -83,7 +105,9 @@ python3 -m compileall -q trading_bot/
 6. **error_spike_watchdog_job** — 5분마다 최근 1시간 에러 카운트 체크, 임계(10건) 초과 시 자동 킬스위치 + 긴급 알림
 7. **open_briefing_job** — 평일 09:00 KST 장 시작 브리핑 (잔고/보유종목 요약)
 8. **close_briefing_job** — 평일 15:35 KST 장 마감 브리핑 (오늘 주문/AI 비용/사후 설명 + pnl_daily 기록)
-9. **weekly_holiday_reminder_job** — 매주 월요일 07:00 KST 휴장일 YAML 점검 리마인더 (임시공휴일 대응)
+9. **accuracy_eval_job** (v0.5.0) — 평일 16:30 KST 사후 정확도 평가: 5 거래일
+   경과한 buy/sell signal 에 대해 forward return 계산 → `signals.realized_return_pct` 업데이트
+10. **weekly_holiday_reminder_job** — 매주 월요일 07:00 KST 휴장일 YAML 점검 리마인더 (임시공휴일 대응)
 
 **알림 정책**
 - 기본(`/quiet off`): 10분마다 사이클 요약 전송 (hold 여도). 거래/청산/차단/에러는
@@ -101,23 +125,24 @@ python3 -m compileall -q trading_bot/
 | 파일 | 용도 | 생성/수정 주체 |
 |---|---|---|
 | `trading.sqlite` | 시그널·주문·에러·포지션 기록 | `store/db.py`, `store/repo.py` |
-| `KILL_SWITCH` | 긴급 정지 플래그 (파일 존재 시 구매 차단) | `risk/kill_switch.py`, `/stop` / `/resume` |
+| `KILL_SWITCH` | 긴급 정지 플래그 (파일 존재 시 구매 차단, `trigger: auto` 줄 포함 시 자동 해제 대상) | `risk/kill_switch.py`, `/stop` / `/resume`, `error_spike_watchdog_job` |
+| `KILL_SWITCH_AUTO_RELEASE.log` | 자동 해제 이력 타임스탬프 (플래핑 방지 판정용) | `risk/kill_switch.py` |
 | `AUTO_UPDATE_DISABLED` | 자동 업데이트 꺼짐 플래그 | `bot/update_manager.py`, `/update disable` |
 | `QUIET_MODE` | 조용 모드 플래그 (10분 사이클 hold-only 요약 끔) | `bot/quiet_mode.py`, `/quiet on` / `off` |
 | `current_image_digest` | 기동 시 snapshot 한 GHCR digest (/update 비교용) | `bot/update_manager.py` |
 | `kis_mode_override` | paper/live 모드 런타임 오버라이드 | `bot/mode_switch.py`, `/mode` |
 | `credentials.env` | 자격증명 오버라이드 (`.env` 보다 우선) | `/setcreds`, `nano`, `credentials_watcher_job` |
 | `paper_account_issued` | 모의 계좌 사용 시작 시각 (90일 만료 카운트다운) | `bot/expiry.py`, `/reload`, `/setcreds paper` |
-| `universe.json` | 추적 종목 런타임 오버라이드 | `/universe add`, `/universe remove` |
+| `universe.json` | 추적 종목 런타임 오버라이드 (`{code, name, sector?}`) | `/universe add`, `/universe remove`, 기동 시 섹터 백필 |
 | `backup/trading_YYYYMMDD.sqlite` | 일일 DB 스냅샷 (7일 롤링) | `store/backup.py` + `db_backup_job` |
 
-## 텔레그램 커맨드 (18개)
+## 텔레그램 커맨드 (19개)
 
 **시작**
 - `/menu`, `/start` — 메인 허브 (자주 쓰는 동작을 버튼 하나로)
 
 **조회**
-- `/help`, `/status`, `/positions`, `/signals`, `/cost`, `/mode`, `/universe`, `/about`
+- `/help`, `/status`, `/positions`, `/signals`, `/accuracy`, `/cost`, `/mode`, `/universe`, `/about`
 
 **조작**
 - `/stop`, `/resume` — 킬 스위치 토글
@@ -205,11 +230,22 @@ nano data/credentials.env
 - **기계적 청산 우선**
   손절/익절/트레일링은 LLM 이 아닌 고정 규칙. 속도/신뢰성/비용 모두 유리.
 
-- **사일런트 실패 방지 — 에러 급증 자동 회로차단기**
+- **사일런트 실패 방지 — 에러 급증 자동 회로차단기 + 자동 복구**
   5분마다 최근 1시간 에러 카운트를 체크해 10건 초과 시 자동으로 킬스위치 활성화 +
   긴급 텔레그램 알림. 이유: 토큰 만료/네트워크 장애/API 변경 같은 상황에서 봇이
-  hold-only 사이클처럼 조용히 실패 누적하는 걸 막기 위해. `kill_switch.is_active()`
-  체크로 중복 알림 방지.
+  hold-only 사이클처럼 조용히 실패 누적하는 걸 막기 위해.
+
+  **자동 해제 정책** — 일시적 장애(모의 서버 500, 네트워크 일시 단절)로 걸린
+  킬스위치가 사용자 부재 중 하루 종일 못 풀려 기회를 통째로 날리는 상황을 방지.
+  - 자동 활성화된 킬스위치(`KILL_SWITCH` 파일에 `trigger: auto` 표시)만 자동 해제 대상
+  - 조건: 활성화 후 최소 15분 경과 + 최근 30분 에러 0건
+  - 해제 시 "✅ 자동 복구" 텔레그램 알림 전송 (조용 모드 무관)
+  - **플래핑 방지**: 자동 해제 이력을 `data/KILL_SWITCH_AUTO_RELEASE.log` 에 append.
+    해제 후 1시간 내 재활성화되면 "플래핑 감지" 경고 + 그땐 수동 해제만 가능
+  - 수동(`/stop`, `touch data/KILL_SWITCH`) 으로 걸린 킬스위치는 **절대 자동 해제 안 함**
+    (구조적 문제일 수 있으므로 사용자가 직접 판단하도록)
+
+  파라미터는 `main.py` 상수(`_AUTO_KILL_*`)로 하드코딩. 튜닝 필요 시 그 값을 수정.
 
 - **주문 체결 여부 추적 — submitted 는 '접수'이지 '체결'이 아님**
   시장가 주문이라 대부분 즉시 체결되지만, 상한가·거래정지·호가 부족 등으로 미체결
@@ -302,10 +338,18 @@ GitHub Actions 가 자동으로:
    `msg_cd=40580000 msg1=모의투자 장종료 입니다`. 스케줄러가 평일 09:00~15:30 로
    제한돼 있어 자동 운용 중엔 문제 없음. `--once --force` 수동 테스트 시만 주의.
 
-4. **보수적 rate limit 마진**
-   - 실전 서버: 최소 0.12초 간격 (~8 req/s)
-   - 모의 서버: 최소 0.55초 간격 (~1.8 req/s)
-   이보다 빠르면 5종목 연속 조회에서도 500 튐.
+4. **KIS 유량 정책 및 throttle 설정** (v0.5.0)
+   - **공식 한도**: 실전 20 req/s · 모의 2 req/s
+   - **신규 API 발급 후 3일**: 실전도 3 req/s 로 임시 제한
+   - **기본 throttle** (settings.yaml `rate_limit`):
+     - 실전: `live_min_interval_sec: 0.055` (~18 req/s, 한도 90%)
+     - 모의: `paper_min_interval_sec: 0.55` (~1.8 req/s, 한도 90%)
+   - **신규 키 3일간 임시 조정**: `live_min_interval_sec` 를 `0.34` (~2.9 req/s)
+     로 고친 뒤 3일 경과 후 다시 `0.055` 로 복원.
+   - `KisClient._throttle()` 가 서버별 최소 간격을 강제 (멀티스레드 lock 포함).
+     hashkey 발급 호출도 동일 throttle 대상.
+   - 이 간격보다 빠르게 호출하면 "초당 거래건수를 초과" 가 500 + JSON 바디로
+     내려옴 (아래 알려진 버그 1번 참조).
 
 5. **주문 hashkey 필수**
    POST `/uapi/domestic-stock/v1/trading/order-cash` 는 `hashkey` 헤더 필수.
@@ -526,6 +570,7 @@ scripts/
 | v0.3.0 | **알림 정책 개편**: /quiet 토글(hold-only 사이클 요약 on/off), 장 시작/마감 브리핑 2회 |
 | v0.3.1 | /quiet 의미 반전 — 기본은 10분 요약 전송, `/quiet on` 일 때만 hold 스킵 (브리핑은 항상 유지) |
 | v0.4.0 | **신뢰성/관찰성 대폭 강화**: 주문 체결 추적, 에러 급증 회로차단기, pnl_daily 활성화, /signals 차단 통계, 장 마감 사후 설명, SQLite 자동 백업, 휴장일 주간 리마인더, LLM 프롬프트 캐싱, /universe 현재가 표시, 종목당 비중 15→32% |
+| v0.5.0 | **거래 판단 로직 개편 + 신뢰성/관찰성 확장**: 〈판단 로직〉 (1) 분산 강화 — 동시 보유 3→5, 종목당 32→19.5% (2) 추세 필터 — `현재가 > SMA20` 조건 추가로 떨어지는 칼날 차단 (3) ATR 동적 손절 — 변동성 큰 종목 자동 넓은 손절 (4) 장 시작/마감 신규 매수 차단 (09:00~09:10, 15:20~15:30) (5) LLM side_hint 제거 + prefilter↔LLM 교차검증 (확증 편향 제거) (6) 유니버스 셔플 (종목 순서 공정성) 〈신뢰성/관찰성〉 (7) 섹터 분산 게이트 — universe 에 업종(KIS `bstp_kor_isnm`) 자동 백필 + `max_per_sector: 2` 리스크 게이트 (8) 사후 정확도 트래킹 — 5 거래일 경과한 buy/sell signal 의 forward return 계산 + `/accuracy` 커맨드 (confidence bucket 별 적중률 + DIRECTION_CONFLICT/LLM_HOLD 태그 집계) (9) 체결 확인 강화 — 사이클 끝에 30초 일괄 대기 후 KIS 체결 조회, 미체결 매수 자동 취소(`cancel_order`), 미체결 판매 계속 대기, 사이클 요약에 체결 섹션 표시 (10) KIS throttle 개선 — 실전 0.12s→0.055s (8→18 req/s, 한도 20 의 90%), `settings.yaml rate_limit` 로 설정 가능 (신규 키 3일 제한 시 임시 조정용) |
 
 ## 개발 로드맵 (선택)
 
