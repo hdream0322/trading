@@ -87,14 +87,16 @@ def _check_update(ctx: BotContext) -> dict[str, Any]:
     # 현재 버전 (Docker 이미지에 주입된 BOT_VERSION)
     current_version = bot_version
 
-    # 최신 릴리스 버전 (GitHub Releases API)
-    latest_version: str | None = None
+    # 최신 릴리스 정보 (버전 + 태그 annotation body) — 한 번에 조회
+    latest_info: dict[str, str] | None = None
     latest_err: str | None = None
     try:
-        latest_version = update_manager.fetch_latest_release_version()
+        latest_info = update_manager.fetch_latest_release_info()
     except Exception as exc:
         latest_err = str(exc)
-        log.warning("최신 릴리스 버전 조회 실패: %s", exc)
+        log.warning("최신 릴리스 정보 조회 실패: %s", exc)
+
+    latest_version = (latest_info or {}).get("tag")
 
     # digest 비교 — 실제 업데이트 필요 여부는 이걸로 판단
     has_update: bool | None = None
@@ -124,6 +126,14 @@ def _check_update(ctx: BotContext) -> dict[str, Any]:
         lines.append("")
         lines.append("_약 30~60초 뒤 봇이 자동으로 다시 시작돼요._")
         lines.append("_그동안 잠깐 응답이 멈출 수 있어요._")
+
+        summary = _summarize_release_body((latest_info or {}).get("body") or "")
+        if summary:
+            lines.append("")
+            lines.append("📋 *새 버전 변경 사항*")
+            lines.append("```")
+            lines.append(summary)
+            lines.append("```")
     else:
         # digest 비교 실패 — 사용자가 직접 판단
         lines.append("❓ *업데이트 여부를 확인할 수 없어요*")
