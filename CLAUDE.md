@@ -24,7 +24,7 @@
 python3 -m venv .venv
 source .venv/bin/activate
 pip install "httpx[http2]>=0.27" "pyyaml>=6.0" "python-dotenv>=1.0" \
-            "anthropic>=0.40" "apscheduler>=3.10"
+            "anthropic>=0.40" "apscheduler>=3.10,<4"
 
 # .env 작성 (README 의 '처음 시작하기' 섹션 참고)
 cp .env.example .env

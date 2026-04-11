@@ -250,7 +250,7 @@ chmod 600 .env
 python3 -m venv .venv
 source .venv/bin/activate
 pip install "httpx[http2]>=0.27" "pyyaml>=6.0" "python-dotenv>=1.0" \
-            "anthropic>=0.40" "apscheduler>=3.10"
+            "anthropic>=0.40" "apscheduler>=3.10,<4"
 
 # Stage 1 smoke test (토큰 → 잔고 → 5종목 시세 → 텔레그램)
 python -m trading_bot.smoke_test
