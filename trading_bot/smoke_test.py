@@ -38,7 +38,7 @@ def main() -> int:
     lines.append(f"거래 모드: `{settings.kis.mode}`  /  시세 서버: `{settings.kis_quote.mode}`")
     lines.append("")
 
-    with KisClient(settings.kis, settings.kis_quote) as kis:
+    with KisClient.from_settings(settings) as kis:
         try:
             balance = kis.get_balance()
             summary = balance.get("summary", {})

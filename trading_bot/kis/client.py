@@ -21,14 +21,41 @@ class KisClient:
     - quote: 항상 live 서버 (모의 서버 시세는 부분 지원이라 500 빈번)
     """
 
-    # KIS 레이트리밋: 실전 20req/s, 모의 2req/s로 알려져 있음.
-    # 버스트 마진 고려해 보수적으로 서버별 최소 간격을 둔다.
-    MIN_INTERVAL_LIVE_SEC = 0.12   # ≈8 req/s
-    MIN_INTERVAL_PAPER_SEC = 0.55  # ≈1.8 req/s
+    # KIS 공식 유량 정책 (2026-04 기준):
+    #   - 실전: 기본 20 req/s (신규 API 발급 후 3일간은 3 req/s 로 임시 제한)
+    #   - 모의: 기본 2 req/s (신규 제한 없음)
+    # 기본값은 한도 대비 안전 마진 ~10% 두고 설정:
+    #   - LIVE 0.055s ≈ 18 req/s (한도 20 의 90%)
+    #   - PAPER 0.55s ≈ 1.8 req/s (한도 2 의 90%)
+    # 신규 API 발급 직후 3일간은 settings.yaml 의 rate_limit.live_min_interval_sec
+    # 를 0.34 (≈2.9 req/s) 로 임시 조정 후 다시 복원.
+    DEFAULT_MIN_INTERVAL_LIVE_SEC = 0.055
+    DEFAULT_MIN_INTERVAL_PAPER_SEC = 0.55
 
-    def __init__(self, trade_cfg: KisConfig, quote_cfg: KisConfig | None = None):
+    def __init__(
+        self,
+        trade_cfg: KisConfig,
+        quote_cfg: KisConfig | None = None,
+        live_min_interval_sec: float | None = None,
+        paper_min_interval_sec: float | None = None,
+    ):
         self.trade_cfg = trade_cfg
         self.quote_cfg = quote_cfg or trade_cfg
+        self._live_min_interval = (
+            float(live_min_interval_sec)
+            if live_min_interval_sec is not None
+            else self.DEFAULT_MIN_INTERVAL_LIVE_SEC
+        )
+        self._paper_min_interval = (
+            float(paper_min_interval_sec)
+            if paper_min_interval_sec is not None
+            else self.DEFAULT_MIN_INTERVAL_PAPER_SEC
+        )
+        log.info(
+            "KIS throttle 설정: live=%.3fs (≈%.1f req/s) / paper=%.3fs (≈%.1f req/s)",
+            self._live_min_interval, 1.0 / self._live_min_interval,
+            self._paper_min_interval, 1.0 / self._paper_min_interval,
+        )
         self._trade_client = httpx.Client(base_url=trade_cfg.base_url, timeout=10)
         self._quote_client = httpx.Client(base_url=self.quote_cfg.base_url, timeout=10)
         self._last_request: dict[str, float] = {
@@ -49,7 +76,7 @@ class KisClient:
         self.close()
 
     def _min_interval(self, cfg: KisConfig) -> float:
-        return self.MIN_INTERVAL_LIVE_SEC if cfg.is_live else self.MIN_INTERVAL_PAPER_SEC
+        return self._live_min_interval if cfg.is_live else self._paper_min_interval
 
     def _throttle(self, cfg: KisConfig) -> None:
         with self._throttle_lock:
@@ -124,6 +151,20 @@ class KisClient:
             break
 
         raise RuntimeError(f"KIS 현재가 조회 실패 ({code}): {last_err}")
+
+    def get_stock_sector(self, code: str) -> str:
+        """종목코드의 업종 한글명 (섹터) 조회.
+
+        `inquire-price` 응답의 `bstp_kor_isnm` 필드를 재활용.
+        예: "반도체", "은행", "자동차부품".
+        실패/없음 시 빈 문자열 반환 (섹터 게이트가 우회됨).
+        """
+        try:
+            output = self.get_price(code)
+            return str(output.get("bstp_kor_isnm") or "").strip()
+        except Exception as exc:
+            log.warning("섹터 조회 실패 %s: %s", code, exc)
+            return ""
 
     def get_stock_name(self, code: str, max_retries: int = 3) -> str:
         """종목코드로 한국어 종목명을 조회한다.
@@ -448,6 +489,108 @@ class KisClient:
             break
 
         raise RuntimeError(f"KIS 잔고 조회 실패: {last_err}")
+
+    def cancel_order(
+        self,
+        order_no: str,
+        krx_fwdg_ord_orgno: str,
+        qty: int,
+    ) -> dict[str, Any]:
+        """미체결 주문 취소. 주문 취소 엔드포인트 (order-rvsecncl, RVSE_CNCL_DVSN_CD=02).
+
+        필요 파라미터:
+          - order_no: 원주문번호 (ORGN_ODNO)
+          - krx_fwdg_ord_orgno: 한국거래소 전송 주문조직번호 (ord_gno_brno)
+          - qty: 취소 수량 (보통 미체결 잔량)
+
+        반환: {order_no, raw}
+        """
+        cfg = self.trade_cfg
+        if cfg.is_live:
+            tr_id = "TTTC0803U"
+        else:
+            tr_id = "VTTC0803U"
+
+        body = {
+            "CANO": cfg.account_no,
+            "ACNT_PRDT_CD": cfg.account_product_cd,
+            "KRX_FWDG_ORD_ORGNO": krx_fwdg_ord_orgno,
+            "ORGN_ODNO": order_no,
+            "ORD_DVSN": "01",  # 시장가 원주문
+            "RVSE_CNCL_DVSN_CD": "02",  # 02 = 취소
+            "ORD_QTY": str(qty),
+            "ORD_UNPR": "0",
+            "QTY_ALL_ORD_YN": "Y",  # 잔량 전부 취소
+        }
+
+        hashkey = self.get_hashkey(body)
+        self._throttle(cfg)
+        resp = self._trade_client.post(
+            "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+            json=body,
+            headers={
+                "authorization": f"Bearer {get_access_token(cfg)}",
+                "appkey": cfg.app_key,
+                "appsecret": cfg.app_secret,
+                "tr_id": tr_id,
+                "custtype": "P",
+                "hashkey": hashkey,
+                "content-type": "application/json; charset=utf-8",
+            },
+        )
+        try:
+            data = resp.json()
+        except Exception:
+            raise RuntimeError(
+                f"KIS 취소 응답 파싱 실패: status={resp.status_code} body={resp.text[:300]}"
+            )
+
+        if resp.status_code == 200 and data.get("rt_cd") == "0":
+            output = data.get("output") or {}
+            return {
+                "order_no": str(output.get("ODNO", "")),
+                "raw": data,
+            }
+
+        msg = data.get("msg1", "")
+        msg_cd = data.get("msg_cd", "")
+        raise RuntimeError(
+            f"KIS 주문 취소 실패 ({order_no}): status={resp.status_code} "
+            f"msg_cd={msg_cd} msg1={msg}"
+        )
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> "KisClient":
+        """Settings 객체에서 throttle 값을 뽑아 KisClient 를 생성.
+
+        `settings.rate_limit` 블록을 읽어 live/paper 최소 간격을 적용.
+        다섯 곳의 생성 호출을 한 곳에서 관리해 설정 변경 시 일관성 유지.
+        """
+        rl = getattr(settings, "rate_limit", {}) or {}
+        return cls(
+            trade_cfg=settings.kis,
+            quote_cfg=settings.kis_quote,
+            live_min_interval_sec=rl.get("live_min_interval_sec"),
+            paper_min_interval_sec=rl.get("paper_min_interval_sec"),
+        )
+
+    @classmethod
+    def from_settings_with_override(
+        cls,
+        settings: Any,
+        trade_cfg: KisConfig,
+    ) -> "KisClient":
+        """런타임 모드/자격증명 교체 시 새 trade_cfg 로 KisClient 재생성.
+
+        rate_limit 는 settings 에서 그대로, quote_cfg 도 settings.kis_quote 유지.
+        """
+        rl = getattr(settings, "rate_limit", {}) or {}
+        return cls(
+            trade_cfg=trade_cfg,
+            quote_cfg=settings.kis_quote,
+            live_min_interval_sec=rl.get("live_min_interval_sec"),
+            paper_min_interval_sec=rl.get("paper_min_interval_sec"),
+        )
 
     def inquire_daily_ccld(
         self,
