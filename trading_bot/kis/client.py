@@ -448,3 +448,75 @@ class KisClient:
             break
 
         raise RuntimeError(f"KIS 잔고 조회 실패: {last_err}")
+
+    def inquire_daily_ccld(
+        self,
+        order_no: str | None = None,
+        max_retries: int = 3,
+    ) -> list[dict[str, Any]]:
+        """당일 주문 체결 조회 (inquire-daily-ccld).
+
+        order_no 주면 해당 주문번호만 필터링해서 반환, None 이면 오늘 전체.
+        반환: 주문별 체결 정보 리스트 (KIS output1).
+          주요 필드:
+            - odno: 주문번호
+            - pdno: 종목코드
+            - ord_qty: 주문 수량
+            - tot_ccld_qty: 총 체결 수량
+            - rmn_qty: 미체결 수량
+            - cncl_yn: 취소 여부
+            - ord_dvsn_name: 주문 구분 (시장가/지정가)
+            - sll_buy_dvsn_cd: 매도/매수 구분
+        """
+        cfg = self.trade_cfg
+        # 당일 체결: TTTC0081R (live) / VTTC0081R (paper)
+        tr_id = "TTTC0081R" if cfg.is_live else "VTTC0081R"
+        today = datetime.now().strftime("%Y%m%d")
+
+        params = {
+            "CANO": cfg.account_no,
+            "ACNT_PRDT_CD": cfg.account_product_cd,
+            "INQR_STRT_DT": today,
+            "INQR_END_DT": today,
+            "SLL_BUY_DVSN_CD": "00",  # 전체
+            "INQR_DVSN": "00",         # 역순
+            "PDNO": "",
+            "CCLD_DVSN": "00",         # 전체
+            "ORD_GNO_BRNO": "",
+            "ODNO": order_no or "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        last_err = ""
+        for attempt in range(1, max_retries + 1):
+            self._throttle(cfg)
+            resp = self._trade_client.get(
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                params=params,
+                headers=self._headers(cfg, tr_id),
+            )
+            body: dict[str, Any] | None
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+
+            if resp.status_code == 200 and body and body.get("rt_cd") == "0":
+                return list(body.get("output1") or [])
+
+            msg = (body or {}).get("msg1", resp.text[:200] if body is None else "")
+            msg_cd = (body or {}).get("msg_cd", "") if body else ""
+            last_err = f"status={resp.status_code} msg_cd={msg_cd} msg1={msg}"
+
+            is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
+            if (is_rate_limit or resp.status_code >= 500) and attempt < max_retries:
+                wait = 0.5 * attempt
+                log.warning("체결 조회 재시도 %s, %.1fs 대기", last_err, wait)
+                time.sleep(wait)
+                continue
+            break
+
+        raise RuntimeError(f"KIS 체결 조회 실패: {last_err}")

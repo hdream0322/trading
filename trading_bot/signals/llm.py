@@ -117,12 +117,22 @@ class ClaudeSignalClient:
     ) -> LlmDecision:
         user_msg = self._build_user_message(features, side_hint, recent_ohlcv)
 
+        # 프롬프트 캐싱 — system 과 tool 정의는 매 호출 동일하므로 ephemeral 캐시 태그.
+        # 동일 시스템 프롬프트·도구 정의를 연속 호출할 때 캐시 히트 → 입력 비용 약 90% 절감.
+        # 주의: Haiku/Sonnet 최소 캐시 블록은 1024 토큰. 시스템 프롬프트가 짧아
+        # 기준 미달이면 Anthropic 이 조용히 정상 과금으로 폴백 (에러 없음).
         resp = self.client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            system=SYSTEM_PROMPT,
-            tools=[DECISION_TOOL],
+            system=[
+                {
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            tools=[{**DECISION_TOOL, "cache_control": {"type": "ephemeral"}}],
             tool_choice={"type": "tool", "name": "emit_decision"},
             messages=[{"role": "user", "content": user_msg}],
         )
@@ -135,18 +145,31 @@ class ClaudeSignalClient:
         if tool_input is None:
             raise RuntimeError(f"LLM이 emit_decision 도구를 사용하지 않았습니다: {resp}")
 
-        input_tokens = int(resp.usage.input_tokens)
-        output_tokens = int(resp.usage.output_tokens)
+        usage = resp.usage
+        input_tokens = int(usage.input_tokens)
+        output_tokens = int(usage.output_tokens)
+        # 캐시 히트/생성 토큰은 SDK 버전에 따라 없을 수 있으므로 getattr 폴백.
+        cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+
+        # 비용: 일반 입력 1.0x, 캐시 생성 1.25x, 캐시 읽기 0.1x, 출력 1.0x.
         cost = (
             (input_tokens / 1_000_000) * self.input_price
+            + (cache_creation / 1_000_000) * self.input_price * 1.25
+            + (cache_read / 1_000_000) * self.input_price * 0.1
             + (output_tokens / 1_000_000) * self.output_price
         )
+
+        if cache_read > 0:
+            log.info(
+                "LLM 캐시 히트: %d 토큰 재사용 (~90%% 절감)", cache_read,
+            )
 
         return LlmDecision(
             decision=str(tool_input["decision"]),
             confidence=float(tool_input["confidence"]),
             reasoning=str(tool_input["reasoning"]),
-            input_tokens=input_tokens,
+            input_tokens=input_tokens + cache_creation + cache_read,
             output_tokens=output_tokens,
             model=self.model,
             cost_usd=cost,

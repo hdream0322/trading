@@ -73,14 +73,17 @@ python3 -m compileall -q trading_bot/
 6. 중복 진입 차단
 7. 동시 보유 종목 수 + 포지션 사이징
 
-### APScheduler 크론 작업 6개 (`main.py`)
+### APScheduler 크론 작업 9개 (`main.py`)
 
 1. **cycle_job** — 평일 09:00~15:30 KST 매 `cycle_minutes` (기본 10분) 점검
 2. **auto_update_job** — 매일 02:00 KST 자동 업데이트 체크 (Watchtower HTTP API 호출)
-3. **paper_expiry_check_job** — 매일 08:00 KST 모의 계좌 90일 만료 체크
-4. **credentials_watcher_job** — 5분마다 `data/credentials.env` mtime 감시, 변경 시 자동 재로드
-5. **open_briefing_job** — 평일 09:00 KST 장 시작 브리핑 (잔고/보유종목 요약)
-6. **close_briefing_job** — 평일 15:35 KST 장 마감 브리핑 (오늘 주문/AI 비용 요약)
+3. **db_backup_job** — 매일 01:55 KST SQLite 스냅샷 백업 + 7일 초과분 제거
+4. **paper_expiry_check_job** — 매일 08:00 KST 모의 계좌 90일 만료 체크
+5. **credentials_watcher_job** — 5분마다 `data/credentials.env` mtime 감시, 변경 시 자동 재로드
+6. **error_spike_watchdog_job** — 5분마다 최근 1시간 에러 카운트 체크, 임계(10건) 초과 시 자동 킬스위치 + 긴급 알림
+7. **open_briefing_job** — 평일 09:00 KST 장 시작 브리핑 (잔고/보유종목 요약)
+8. **close_briefing_job** — 평일 15:35 KST 장 마감 브리핑 (오늘 주문/AI 비용/사후 설명 + pnl_daily 기록)
+9. **weekly_holiday_reminder_job** — 매주 월요일 07:00 KST 휴장일 YAML 점검 리마인더 (임시공휴일 대응)
 
 **알림 정책**
 - 기본(`/quiet off`): 10분마다 사이클 요약 전송 (hold 여도). 거래/청산/차단/에러는
@@ -106,6 +109,7 @@ python3 -m compileall -q trading_bot/
 | `credentials.env` | 자격증명 오버라이드 (`.env` 보다 우선) | `/setcreds`, `nano`, `credentials_watcher_job` |
 | `paper_account_issued` | 모의 계좌 사용 시작 시각 (90일 만료 카운트다운) | `bot/expiry.py`, `/reload`, `/setcreds paper` |
 | `universe.json` | 추적 종목 런타임 오버라이드 | `/universe add`, `/universe remove` |
+| `backup/trading_YYYYMMDD.sqlite` | 일일 DB 스냅샷 (7일 롤링) | `store/backup.py` + `db_backup_job` |
 
 ## 텔레그램 커맨드 (18개)
 
@@ -200,6 +204,23 @@ nano data/credentials.env
 
 - **기계적 청산 우선**
   손절/익절/트레일링은 LLM 이 아닌 고정 규칙. 속도/신뢰성/비용 모두 유리.
+
+- **사일런트 실패 방지 — 에러 급증 자동 회로차단기**
+  5분마다 최근 1시간 에러 카운트를 체크해 10건 초과 시 자동으로 킬스위치 활성화 +
+  긴급 텔레그램 알림. 이유: 토큰 만료/네트워크 장애/API 변경 같은 상황에서 봇이
+  hold-only 사이클처럼 조용히 실패 누적하는 걸 막기 위해. `kill_switch.is_active()`
+  체크로 중복 알림 방지.
+
+- **주문 체결 여부 추적 — submitted 는 '접수'이지 '체결'이 아님**
+  시장가 주문이라 대부분 즉시 체결되지만, 상한가·거래정지·호가 부족 등으로 미체결
+  가능. 사이클 마지막에 `fill_tracker.reconcile_pending_orders` 가 KIS
+  inquire-daily-ccld 를 호출해 submitted → filled / partial / cancelled 로 상태
+  업데이트. DB 에 남은 '유령 접수' 기록 방지.
+
+- **LLM 프롬프트 캐싱 (ephemeral)**
+  `signals/llm.py` 에서 system 프롬프트 + tool 정의에 `cache_control` 태그. 연속
+  호출 시 캐시 히트로 입력 비용 최대 90% 절감. 최소 캐시 블록 (1024 토큰) 미달 시
+  Anthropic 이 조용히 정상 과금으로 폴백 — 에러 없음.
 
 - **`/quiet` 는 10분 사이클 요약 토글, 브리핑은 독립**
   기본(`/quiet off`)은 10분 사이클마다 hold 여도 요약을 보낸다 (봇 살아있음 확인 +
@@ -350,11 +371,18 @@ trading_bot/
     prefilter.py       룰베이스 후보 선정 (Candidate dataclass)
     llm.py             Claude API + emit_decision tool_use
                          SYSTEM_PROMPT: 쉬운 말로 reasoning 작성 지시
+                         프롬프트 캐싱 (system + tools ephemeral) → 입력 비용 절감
     exit_strategy.py   check_exit (손절/익절/트레일링)
                          sync_position_state, update_high_water_mark
     cycle.py           run_cycle (전체 오케스트레이션)
                          _run_exit_checks (청산 단계)
                          _notify_summary (텔레그램 요약)
+                         마지막에 fill_tracker.reconcile_pending_orders 호출
+    fill_tracker.py    체결 상태 추적
+                         KIS inquire-daily-ccld 로 submitted → filled/partial/cancelled 업데이트
+    briefing.py        send_open_briefing (09:00), send_close_briefing (15:35)
+                         장 마감: pnl_daily 기록 + "왜 오늘 거래가 없었나" 사후 설명
+    heartbeat.py       (deprecated, briefing.py 로 대체됨 — 파일 없음)
 
   risk/
     manager.py         RiskManager.check (7단계 게이트, is_exit 파라미터)
@@ -392,6 +420,12 @@ trading_bot/
                          orders 테이블 name/reason 컬럼 ALTER 추가 (마이그레이션)
                          signals.llm_cost_usd ALTER 추가 (마이그레이션)
     repo.py            insert/query 헬퍼 함수들
+                         upsert_pnl_daily, get_recent_pnl_daily (주간 통계)
+                         get_today_signal_summary, get_today_risk_rejection_reasons
+                         get_pending_orders_today, update_order_status (체결 추적)
+                         count_recent_errors (회로차단기)
+    backup.py          SQLite Online Backup API (sqlite3.Connection.backup)
+                         data/backup/trading_YYYYMMDD.sqlite 롤링 7일 보관
 
   utils/
     calendar_kr.py     is_trading_day, is_market_open_now
@@ -491,6 +525,7 @@ scripts/
 | v0.2.8 | **런타임 제어 대폭 강화**: /mode, /reload, /restart, /setcreds, 만료 자동 알림, credentials 자동 감시 |
 | v0.3.0 | **알림 정책 개편**: /quiet 토글(hold-only 사이클 요약 on/off), 장 시작/마감 브리핑 2회 |
 | v0.3.1 | /quiet 의미 반전 — 기본은 10분 요약 전송, `/quiet on` 일 때만 hold 스킵 (브리핑은 항상 유지) |
+| v0.4.0 | **신뢰성/관찰성 대폭 강화**: 주문 체결 추적, 에러 급증 회로차단기, pnl_daily 활성화, /signals 차단 통계, 장 마감 사후 설명, SQLite 자동 백업, 휴장일 주간 리마인더, LLM 프롬프트 캐싱, /universe 현재가 표시, 종목당 비중 15→32% |
 
 ## 개발 로드맵 (선택)
 

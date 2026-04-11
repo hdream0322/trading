@@ -470,7 +470,17 @@ def _universe_list(ctx: BotContext) -> dict[str, Any]:
         lines.append("_(없음)_")
     else:
         for item in ctx.settings.universe:
-            lines.append(f"- {item['name']} (`{item['code']}`)")
+            code = item["code"]
+            name = item["name"]
+            price_str = "?"
+            try:
+                price_output = ctx.kis.get_price(code)
+                price = int(price_output.get("stck_prpr") or 0)
+                if price > 0:
+                    price_str = f"{price:,}원"
+            except Exception:
+                pass
+            lines.append(f"- {name} (`{code}`) · {price_str}")
     lines.append(f"\n점검 주기: {ctx.settings.cycle_minutes}분")
     lines.append(
         "\n추가: `/universe add 005490`\n"
@@ -689,17 +699,46 @@ def cmd_signals(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         )
         rows = cur.fetchall()
         conn.close()
+        signal_summary = repo.get_today_signal_summary()
+        risk_reasons = repo.get_today_risk_rejection_reasons()
     except Exception as exc:
         return _reply(f"❌ 기록 조회 실패\n`{exc}`")
-    if not rows:
-        return _reply("오늘 나온 추천이 아직 없습니다")
-    lines = ["*오늘 매매 추천 (최근 10개)*"]
-    for t, code, name, decision, conf, reason in rows:
-        conf_str = f" {confidence_pct(conf)}" if conf is not None else ""
-        emoji = {"buy": "🟢", "sell": "🔴", "hold": "⚪"}.get(decision, "❓")
-        lines.append(f"{emoji} `{t}` {name or code} → *{decision_ko(decision)}*{conf_str}")
-        if reason:
-            lines.append(f"   _{reason}_")
+
+    lines: list[str] = []
+    if rows:
+        lines.append("*오늘 매매 추천 (최근 10개)*")
+        for t, code, name, decision, conf, reason in rows:
+            conf_str = f" {confidence_pct(conf)}" if conf is not None else ""
+            emoji = {"buy": "🟢", "sell": "🔴", "hold": "⚪"}.get(decision, "❓")
+            lines.append(f"{emoji} `{t}` {name or code} → *{decision_ko(decision)}*{conf_str}")
+            if reason:
+                lines.append(f"   _{reason}_")
+    else:
+        lines.append("_오늘 나온 추천이 아직 없습니다._")
+
+    # 사후 통계 — 점검/후보/판단/차단 요약
+    if signal_summary["total_checks"] > 0:
+        lines.append("")
+        lines.append("*📊 오늘 요약*")
+        lines.append(
+            f"- 점검 {signal_summary['total_checks']}회 · 1차 통과 "
+            f"{signal_summary['prefilter_pass']}개"
+        )
+        lines.append(
+            f"- AI: 구매 {signal_summary['llm_buy']} · 판매 {signal_summary['llm_sell']} · "
+            f"관망 {signal_summary['llm_hold']}"
+        )
+        if signal_summary["low_confidence"] > 0:
+            lines.append(
+                f"- 확신도 75% 미달로 주문까지 못 간 건 {signal_summary['low_confidence']}건"
+            )
+
+    if risk_reasons:
+        lines.append("")
+        lines.append("*⛔ 안전장치가 막은 사유*")
+        for reason, count in risk_reasons:
+            lines.append(f"- {reason}: {count}건")
+
     return _reply("\n".join(lines))
 
 

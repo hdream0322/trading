@@ -62,7 +62,8 @@ def send_close_briefing(settings: Settings, kis: KisClient) -> None:
     """장 마감 브리핑 — 평일 15:35 KST.
 
     조용 모드와 무관하게 매일 전송.
-    오늘 처리된 주문 내역 + 누적 LLM 비용 + 잔고 요약.
+    오늘 처리된 주문 내역 + 누적 LLM 비용 + 잔고 요약 + 사후 설명.
+    부가로 pnl_daily 에 오늘 실적 레코드 기록.
     """
     badge = mode_badge(settings.kis.mode)
     try:
@@ -78,10 +79,29 @@ def send_close_briefing(settings: Settings, kis: KisClient) -> None:
 
     orders = repo.get_today_orders()
     daily_cost = repo.today_llm_cost_usd()
+    signal_summary = repo.get_today_signal_summary()
+    risk_reasons = repo.get_today_risk_rejection_reasons()
 
     submitted = [o for o in orders if o.get("status") == "submitted"]
     rejected = [o for o in orders if o.get("status") == "rejected"]
     errored = [o for o in orders if o.get("status") == "error"]
+
+    # 오늘 실적을 pnl_daily 에 기록 (date 중복이면 덮어씀).
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    try:
+        ending_equity = float(balance_summary.get("tot_evlu_amt") or 0)
+        unrealized = float(balance_summary.get("evlu_pfls_smtl_amt") or 0)
+        trade_count = len(submitted)
+        repo.upsert_pnl_daily(
+            date=today_str,
+            starting_equity=None,
+            ending_equity=ending_equity,
+            realized_pnl=None,
+            unrealized_pnl=unrealized,
+            trade_count=trade_count,
+        )
+    except Exception:
+        log.exception("pnl_daily 기록 실패 (브리핑은 계속 전송)")
 
     lines = [
         f"🌇 *장 마감 브리핑* {badge} — {datetime.now():%Y-%m-%d %H:%M}",
@@ -102,8 +122,35 @@ def send_close_briefing(settings: Settings, kis: KisClient) -> None:
                 f"• {o.get('name') or ''} ({o.get('code')}) {side_ko} {o.get('qty')}주"
             )
 
-    if not submitted and not rejected and not errored:
+    # 사후 설명: "왜 오늘 거래가 없었나"
+    # 거래가 없었고(접수 0) 사이클은 돌아간 경우(total_checks > 0)에만 표시.
+    if not submitted and signal_summary["total_checks"] > 0:
         lines.append("")
-        lines.append("_오늘은 거래 이벤트가 없었어요._")
+        lines.append("*📋 오늘 왜 거래가 없었나요?*")
+        lines.append(
+            f"- 총 {signal_summary['total_checks']}회 점검 / "
+            f"1차 통과 {signal_summary['prefilter_pass']}개 후보"
+        )
+        if signal_summary["prefilter_pass"] == 0:
+            lines.append(
+                "- 1차 조건(RSI/거래량) 통과한 종목이 없어서 AI 판단까지 안 갔어요."
+            )
+        else:
+            ai_line = (
+                f"- AI 판단: 구매 {signal_summary['llm_buy']} · "
+                f"판매 {signal_summary['llm_sell']} · 관망 {signal_summary['llm_hold']}"
+            )
+            lines.append(ai_line)
+            if signal_summary["low_confidence"] > 0:
+                lines.append(
+                    f"- 확신도 75% 미달로 주문까지 못 간 건 {signal_summary['low_confidence']}건"
+                )
+        if risk_reasons:
+            reasons_str = ", ".join(f"{k} {v}건" for k, v in risk_reasons)
+            lines.append(f"- 안전장치가 막은 사유: {reasons_str}")
+
+    if not submitted and not rejected and not errored and signal_summary["total_checks"] == 0:
+        lines.append("")
+        lines.append("_오늘은 사이클이 돌지 않았어요. (휴장일일 수 있음)_")
 
     telegram.send(settings.telegram, "\n".join(lines))

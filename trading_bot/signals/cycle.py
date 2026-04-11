@@ -282,6 +282,17 @@ def run_cycle(
                 traceback=tb_module.format_exc(),
             )
 
+    # 체결 추적 — 이번 사이클이나 직전 사이클에서 제출한 주문의 체결 여부를
+    # KIS 당일 체결 조회로 확인해 DB 상태 업데이트 (submitted → filled/partial/cancelled).
+    # 실패해도 사이클 요약은 계속 보낸다.
+    try:
+        from trading_bot.signals import fill_tracker
+        fill_result = fill_tracker.reconcile_pending_orders(kis)
+        if fill_result["checked"] > 0:
+            log.info("체결 추적 결과: %s", fill_result)
+    except Exception:
+        log.exception("체결 추적 실패")
+
     _notify_summary(settings, summary, daily_cost, threshold, balance_summary, executed_events)
     log.info("=== 사이클 종료: %s ===", summary)
     return summary

@@ -54,3 +54,25 @@ def is_market_open_now(open_str: str, close_str: str) -> bool:
     open_t = time.fromisoformat(open_str)
     close_t = time.fromisoformat(close_str)
     return open_t <= now.time() <= close_t
+
+
+def upcoming_holidays(days_ahead: int = 14) -> list[date]:
+    """오늘부터 days_ahead 일 이내의 등록된 휴장일 목록 (정렬).
+
+    주간 리마인더에서 "이번 주/다음 주 휴장일이 있는지" 확인용.
+    """
+    from datetime import timedelta
+    today = date.today()
+    end = today + timedelta(days=days_ahead)
+    result = [d for d in _holidays() if today <= d <= end]
+    return sorted(result)
+
+
+def reload_holidays() -> int:
+    """휴장일 캐시 갱신. YAML 파일이 바뀌었을 때 호출.
+
+    반환: 로드된 휴장일 개수
+    """
+    global _HOLIDAYS_CACHE
+    _HOLIDAYS_CACHE = _load_holidays()
+    return len(_HOLIDAYS_CACHE)

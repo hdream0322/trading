@@ -77,6 +77,109 @@ def auto_update_job(ctx: BotContext) -> None:
         log.exception("자동 업데이트 요청 실패")
 
 
+def weekly_holiday_reminder_job(ctx: BotContext) -> None:
+    """매주 월요일 07:00 KST — 휴장일 YAML 점검 리마인더.
+
+    임시공휴일이 중간에 지정될 수 있어서 주간 확인이 필요. YAML 을 다시 로드한
+    뒤 앞으로 14일 이내 등록된 휴장일을 보여주고, KRX 포털 링크를 함께 보냄.
+    사용자가 직접 확인·수정하는 흐름.
+    """
+    from trading_bot.utils.calendar_kr import reload_holidays, upcoming_holidays
+
+    try:
+        count = reload_holidays()
+        upcoming = upcoming_holidays(days_ahead=14)
+    except Exception:
+        log.exception("주간 휴장일 리마인더 실패")
+        return
+
+    lines = [
+        "📅 *주간 휴장일 점검*",
+        f"등록된 휴장일 총 {count}개 로드 완료.",
+        "",
+    ]
+    if upcoming:
+        lines.append("*앞으로 14일 이내 등록된 휴장일*")
+        for d in upcoming:
+            weekday_ko = ["월", "화", "수", "목", "금", "토", "일"][d.weekday()]
+            lines.append(f"- {d:%Y-%m-%d} ({weekday_ko})")
+    else:
+        lines.append("_앞으로 14일 내 등록된 휴장일 없음._")
+
+    lines.append("")
+    lines.append(
+        "⚠️ *임시공휴일이 갑자기 지정될 수 있어요.*\n"
+        "KRX 공식 캘린더와 비교해 확인해주세요:\n"
+        "https://open.krx.co.kr/contents/MKD/01/0110/01100305/MKD01100305.jsp\n\n"
+        "수정이 필요하면 `config/market_holidays.yaml` 파일을 고치고 "
+        "`/restart` 로 봇을 재시작하면 반영됩니다."
+    )
+
+    try:
+        telegram.send(ctx.settings.telegram, "\n".join(lines))
+    except Exception:
+        log.exception("주간 휴장일 리마인더 전송 실패")
+
+
+def error_spike_watchdog_job(ctx: BotContext) -> None:
+    """5분마다 — 최근 1시간 에러 카운트 체크, 임계치 초과 시 자동 킬스위치.
+
+    사일런트 실패(예: 토큰 만료, API 변경, 네트워크 장애) 를 감지해
+    사용자에게 긴급 알림 + 신규 구매 자동 차단. 회로차단기 역할.
+
+    임계치: 최근 1시간 에러 >= 10건
+    이미 킬스위치가 켜져 있으면 중복 알림 방지.
+    """
+    from trading_bot.risk import kill_switch
+    from trading_bot.store import repo
+
+    try:
+        recent = repo.count_recent_errors(minutes=60)
+    except Exception:
+        log.exception("에러 카운트 조회 실패")
+        return
+
+    if recent < 10:
+        return
+    if kill_switch.is_active():
+        # 이미 정지 상태 — 추가 알림 안 함 (스팸 방지)
+        return
+
+    log.critical("에러 급증 감지: 최근 1시간 %d건 → 자동 킬스위치 활성화", recent)
+    kill_switch.activate(reason=f"에러 급증 자동 차단 (최근 1시간 {recent}건)")
+    try:
+        telegram.send(
+            ctx.settings.telegram,
+            (
+                "🚨 *긴급 — 에러 급증 감지*\n\n"
+                f"최근 1시간 동안 에러가 *{recent}건* 쌓였어요.\n"
+                "뭔가 잘못 돌고 있을 수 있어서 **신규 구매를 자동으로 차단**했습니다.\n"
+                "(갖고 있는 주식의 자동 판매는 계속 작동합니다.)\n\n"
+                "확인 방법:\n"
+                "- `/status` 로 현재 상태 점검\n"
+                "- `/signals` 로 오늘 사이클 결과 확인\n"
+                "- NAS 로그에서 원인 파악\n\n"
+                "조치 후 `/resume` 으로 다시 켤 수 있어요."
+            ),
+        )
+    except Exception:
+        log.exception("에러 급증 알림 전송 실패")
+
+
+def db_backup_job(ctx: BotContext) -> None:
+    """매일 02:00 KST — SQLite 스냅샷 백업 + 7일 초과분 제거.
+
+    auto_update_job 과 같은 시각이지만 순서 영향 없음 (둘 다 독립).
+    """
+    from trading_bot.store import backup
+    try:
+        path = backup.create_daily_backup()
+        removed = backup.prune_old_backups()
+        log.info("DB 백업 스케줄 완료: %s, 정리 %d개", path, removed)
+    except Exception:
+        log.exception("DB 백업 잡 실패")
+
+
 def paper_expiry_check_job(ctx: BotContext) -> None:
     """매일 08:00 KST — KIS 모의투자 계좌 만료 임박 여부 확인.
 
@@ -270,6 +373,15 @@ def main() -> int:
         max_instances=1,
         coalesce=True,
     )
+    # DB 백업 — 매일 01:55 KST (자동 업데이트 직전, 재시작 영향 회피)
+    scheduler.add_job(
+        db_backup_job,
+        CronTrigger(hour=1, minute=55),
+        args=[ctx],
+        id="db_backup",
+        max_instances=1,
+        coalesce=True,
+    )
     # paper 계좌 90일 만료 체크 — 매일 08:00 KST (장 시작 1시간 전)
     scheduler.add_job(
         paper_expiry_check_job,
@@ -288,6 +400,15 @@ def main() -> int:
         max_instances=1,
         coalesce=True,
     )
+    # 에러 급증 회로차단기 — 5분마다 최근 1시간 에러 건수 체크
+    scheduler.add_job(
+        error_spike_watchdog_job,
+        CronTrigger(minute="*/5"),
+        args=[ctx],
+        id="error_spike_watchdog",
+        max_instances=1,
+        coalesce=True,
+    )
     # 장 시작 브리핑 — 평일 09:00 KST
     scheduler.add_job(
         open_briefing_job,
@@ -303,6 +424,15 @@ def main() -> int:
         CronTrigger(day_of_week="mon-fri", hour=15, minute=35),
         args=[ctx],
         id="close_briefing",
+        max_instances=1,
+        coalesce=True,
+    )
+    # 주간 휴장일 점검 리마인더 — 매주 월요일 07:00 KST
+    scheduler.add_job(
+        weekly_holiday_reminder_job,
+        CronTrigger(day_of_week="mon", hour=7, minute=0),
+        args=[ctx],
+        id="weekly_holiday_reminder",
         max_instances=1,
         coalesce=True,
     )

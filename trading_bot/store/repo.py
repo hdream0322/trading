@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import datetime
+from typing import Any
 
 from trading_bot.store.db import DB_PATH
 
@@ -56,6 +57,71 @@ def insert_error(component: str, message: str, traceback: str | None = None) -> 
             "INSERT INTO errors (ts, component, message, traceback) VALUES (?, ?, ?, ?)",
             (ts, component, message, traceback),
         )
+
+
+def get_pending_orders_today() -> list[dict[str, Any]]:
+    """오늘 status='submitted' 이면서 kis_order_no 가 있는 주문들.
+
+    체결 추적 잡이 확인해야 할 대상.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT id, code, name, side, qty, kis_order_no
+                 FROM orders
+                WHERE substr(ts, 1, 10) = ?
+                  AND status = 'submitted'
+                  AND kis_order_no IS NOT NULL
+                  AND kis_order_no != ''
+                ORDER BY id ASC""",
+            (today,),
+        )
+        return [
+            {
+                "id": int(r[0]),
+                "code": r[1],
+                "name": r[2],
+                "side": r[3],
+                "qty": int(r[4] or 0),
+                "kis_order_no": r[5],
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def update_order_status(
+    order_id: int,
+    status: str,
+    reason: str | None = None,
+    price: int | None = None,
+) -> None:
+    """주문 상태 업데이트 — filled / partial / cancelled / failed 등."""
+    with _conn() as conn:
+        if price is not None:
+            conn.execute(
+                "UPDATE orders SET status = ?, reason = COALESCE(?, reason), price = ? WHERE id = ?",
+                (status, reason, price, order_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE orders SET status = ?, reason = COALESCE(?, reason) WHERE id = ?",
+                (status, reason, order_id),
+            )
+
+
+def count_recent_errors(minutes: int = 60) -> int:
+    """최근 N분간 errors 테이블에 쌓인 에러 건수.
+
+    회로차단기(에러 급증 감지) 용도.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM errors WHERE ts >= ?",
+            (cutoff,),
+        )
+        return int(cur.fetchone()[0])
 
 
 def insert_order(
@@ -121,6 +187,130 @@ def get_today_orders() -> list[dict[str, object]]:
                 "qty": int(r[4] or 0),
                 "status": r[5],
                 "reason": r[6],
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def get_today_signal_summary() -> dict[str, int]:
+    """오늘 사이클에서 나온 판단(decision) 카운트 + 차단 사유 집계.
+
+    장 마감 브리핑 "왜 거래가 없었나" 사후 설명 및 /signals 통계용.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    out: dict[str, int] = {
+        "total_checks": 0,
+        "prefilter_pass": 0,
+        "llm_buy": 0,
+        "llm_sell": 0,
+        "llm_hold": 0,
+        "low_confidence": 0,
+        "risk_rejected": 0,
+    }
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT decision, confidence, llm_reasoning
+                 FROM signals WHERE substr(ts, 1, 10) = ?""",
+            (today,),
+        )
+        for decision, confidence, reasoning in cur.fetchall():
+            out["total_checks"] += 1
+            rtext = reasoning or ""
+            if "1차 조건 통과 못함" in rtext:
+                continue
+            out["prefilter_pass"] += 1
+            if decision == "buy":
+                out["llm_buy"] += 1
+            elif decision == "sell":
+                out["llm_sell"] += 1
+            else:
+                out["llm_hold"] += 1
+            if confidence is not None and float(confidence) < 0.75 and decision != "hold":
+                out["low_confidence"] += 1
+
+        cur2 = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE substr(ts, 1, 10) = ? AND status = 'rejected'",
+            (today,),
+        )
+        out["risk_rejected"] = int(cur2.fetchone()[0])
+    return out
+
+
+def get_today_risk_rejection_reasons() -> list[tuple[str, int]]:
+    """오늘 리스크 매니저가 차단한 주문의 사유별 카운트.
+
+    예: [("쿨다운", 3), ("동시 보유 종목 수", 2)]
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT reason FROM orders
+                WHERE substr(ts, 1, 10) = ? AND status = 'rejected'""",
+            (today,),
+        )
+        buckets: dict[str, int] = {}
+        for (reason,) in cur.fetchall():
+            key = _bucket_risk_reason(reason or "")
+            buckets[key] = buckets.get(key, 0) + 1
+    return sorted(buckets.items(), key=lambda x: -x[1])
+
+
+def _bucket_risk_reason(reason: str) -> str:
+    r = reason or ""
+    if "쿨다운" in r or "cooldown" in r.lower():
+        return "쿨다운"
+    if "킬스위치" in r or "킬 스위치" in r or "kill" in r.lower():
+        return "긴급 정지"
+    if "주문 횟수 제한" in r:
+        return "일일 주문 한도"
+    if "일일 손실" in r:
+        return "일일 손실 한도"
+    if "중복" in r or "이미 보유" in r:
+        return "중복 진입"
+    if "동시 보유" in r or "max_concurrent" in r.lower():
+        return "동시 보유 상한"
+    if "포지션" in r and ("사이징" in r or "금액" in r or "%" in r):
+        return "포지션 사이징"
+    return "기타"
+
+
+def upsert_pnl_daily(
+    date: str,
+    starting_equity: float | None,
+    ending_equity: float,
+    realized_pnl: float | None,
+    unrealized_pnl: float | None,
+    trade_count: int,
+) -> None:
+    """장 마감 브리핑에서 오늘 실적을 기록. date 중복 시 갱신 (INSERT OR REPLACE)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO pnl_daily
+               (date, starting_equity, ending_equity, realized_pnl, unrealized_pnl, trade_count)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (date, starting_equity, ending_equity, realized_pnl, unrealized_pnl, trade_count),
+        )
+
+
+def get_recent_pnl_daily(days: int = 7) -> list[dict[str, Any]]:
+    """최근 N일 pnl_daily 레코드. 주간/월간 통계 조회용."""
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT date, starting_equity, ending_equity, realized_pnl,
+                      unrealized_pnl, trade_count
+                 FROM pnl_daily
+                ORDER BY date DESC
+                LIMIT ?""",
+            (days,),
+        )
+        return [
+            {
+                "date": r[0],
+                "starting_equity": r[1],
+                "ending_equity": r[2],
+                "realized_pnl": r[3],
+                "unrealized_pnl": r[4],
+                "trade_count": int(r[5] or 0),
             }
             for r in cur.fetchall()
         ]
