@@ -4,7 +4,7 @@ import argparse
 import logging
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -121,47 +121,120 @@ def weekly_holiday_reminder_job(ctx: BotContext) -> None:
         log.exception("주간 휴장일 리마인더 전송 실패")
 
 
+# 자동 킬스위치 복구 정책
+# - 자동 활성화 후 최소 15분 경과 + 최근 30분 에러 0건 → 자동 해제
+# - 해제 직후 1시간 내 재활성화되면 그 뒤로는 수동 해제만 허용 (플래핑 방지)
+_AUTO_KILL_THRESHOLD = 10          # 최근 1시간 에러 이만큼 쌓이면 자동 활성화
+_AUTO_KILL_MIN_ACTIVE_MIN = 15     # 활성화 후 최소 이 시간은 유지 (즉시 풀림 방지)
+_AUTO_KILL_RECOVERY_WINDOW_MIN = 30  # 이 시간 동안 에러 0건이면 복구로 판정
+_AUTO_KILL_FLAP_WINDOW_H = 1       # 최근 이 시간 내 자동 해제 이력이 있으면 재활성 후 수동만
+
+
 def error_spike_watchdog_job(ctx: BotContext) -> None:
-    """5분마다 — 최근 1시간 에러 카운트 체크, 임계치 초과 시 자동 킬스위치.
+    """5분마다 — 회로차단기 겸 자동 복구 체크.
 
     사일런트 실패(예: 토큰 만료, API 변경, 네트워크 장애) 를 감지해
-    사용자에게 긴급 알림 + 신규 구매 자동 차단. 회로차단기 역할.
+    사용자에게 긴급 알림 + 신규 구매 자동 차단.
 
-    임계치: 최근 1시간 에러 >= 10건
-    이미 킬스위치가 켜져 있으면 중복 알림 방지.
+    동작:
+    - 활성화: 최근 1시간 에러 >= 10건, 킬스위치 꺼져 있을 때 → 자동 활성화 + 알림
+    - 자동 해제: 자동 활성화된 상태 + 최소 15분 경과 + 최근 30분 에러 0건 → 자동 해제 + 알림
+    - 플래핑 방지: 최근 1시간 내 자동 해제 이력 있으면 재활성화는 그대로 하되 자동 해제는 안 함
+    - 수동(/stop, touch) 으로 걸린 킬스위치는 절대 자동 해제하지 않음
     """
     from trading_bot.risk import kill_switch
     from trading_bot.store import repo
 
     try:
-        recent = repo.count_recent_errors(minutes=60)
+        recent_1h = repo.count_recent_errors(minutes=60)
     except Exception:
         log.exception("에러 카운트 조회 실패")
         return
 
-    if recent < 10:
-        return
-    if kill_switch.is_active():
-        # 이미 정지 상태 — 추가 알림 안 함 (스팸 방지)
+    # ─── 복구 경로 — 이미 자동 활성화된 상태라면 해제 조건 검사 ───
+    if kill_switch.is_active() and kill_switch.is_auto_triggered():
+        activated_at = kill_switch.get_activated_at()
+        if activated_at is None:
+            return  # 파일 파싱 실패 — 안전하게 그대로 둠
+
+        elapsed = datetime.now() - activated_at
+        if elapsed < timedelta(minutes=_AUTO_KILL_MIN_ACTIVE_MIN):
+            return  # 최소 유지 시간 미달
+
+        try:
+            recent_30m = repo.count_recent_errors(minutes=_AUTO_KILL_RECOVERY_WINDOW_MIN)
+        except Exception:
+            log.exception("복구 판정용 에러 카운트 조회 실패")
+            return
+        if recent_30m > 0:
+            return  # 복구 창 안에 에러 있음 — 아직 정상 아님
+
+        # 복구 조건 충족 → 자동 해제
+        kill_switch.deactivate(auto=True)
+        log.critical(
+            "자동 킬스위치 복구: 활성화 %d분 경과, 최근 %d분 에러 0건",
+            int(elapsed.total_seconds() / 60),
+            _AUTO_KILL_RECOVERY_WINDOW_MIN,
+        )
+        try:
+            telegram.send(
+                ctx.settings.telegram,
+                (
+                    "✅ *자동 복구 — 비상정지 풀림*\n\n"
+                    f"자동으로 걸렸던 비상정지가 *풀렸어요*.\n"
+                    f"({_AUTO_KILL_RECOVERY_WINDOW_MIN}분 동안 에러가 0건이라 정상 복구된 걸로 판단)\n\n"
+                    "다음 점검부터 새로 구매가 다시 가능합니다.\n"
+                    "(같은 문제가 1시간 안에 또 생기면 그땐 직접 `/resume` 해주셔야 해요.)"
+                ),
+            )
+        except Exception:
+            log.exception("자동 복구 알림 전송 실패")
         return
 
-    log.critical("에러 급증 감지: 최근 1시간 %d건 → 자동 킬스위치 활성화", recent)
-    kill_switch.activate(reason=f"에러 급증 자동 차단 (최근 1시간 {recent}건)")
+    # ─── 활성화 경로 — 에러 급증 감지 ───
+    if recent_1h < _AUTO_KILL_THRESHOLD:
+        return
+    if kill_switch.is_active():
+        # 수동으로 걸린 상태거나 이미 자동 활성 상태 — 추가 알림/재활성 안 함
+        return
+
+    log.critical("에러 급증 감지: 최근 1시간 %d건 → 자동 킬스위치 활성화", recent_1h)
+    kill_switch.activate(
+        reason=f"에러 급증 자동 차단 (최근 1시간 {recent_1h}건)",
+        auto=True,
+    )
+
+    # 최근 1시간 내 자동 해제 이력이 있으면 = 이미 한 번 풀렸다 또 걸린 상태
+    # → 이 알림에 "이번엔 수동 해제 필요" 경고를 추가
+    flapped = kill_switch.count_recent_auto_releases(hours=_AUTO_KILL_FLAP_WINDOW_H) > 0
+
     try:
-        telegram.send(
-            ctx.settings.telegram,
-            (
-                "🚨 *긴급 — 에러 급증 감지*\n\n"
-                f"최근 1시간 동안 에러가 *{recent}건* 쌓였어요.\n"
-                "뭔가 잘못 돌고 있을 수 있어서 **신규 구매를 자동으로 차단**했습니다.\n"
-                "(갖고 있는 주식의 자동 판매는 계속 작동합니다.)\n\n"
-                "확인 방법:\n"
-                "- `/status` 로 현재 상태 점검\n"
-                "- `/signals` 로 오늘 사이클 결과 확인\n"
-                "- NAS 로그에서 원인 파악\n\n"
-                "조치 후 `/resume` 으로 다시 켤 수 있어요."
-            ),
-        )
+        if flapped:
+            telegram.send(
+                ctx.settings.telegram,
+                (
+                    "🚨 *긴급 — 에러 급증 재발 (플래핑)*\n\n"
+                    f"조금 전 자동 복구했는데 다시 에러가 *{recent_1h}건* 쌓였어요.\n"
+                    "구조적 문제일 수 있어서 **이번엔 자동으로 안 풀립니다**.\n\n"
+                    "확인 방법:\n"
+                    "- `/status` 로 현재 상태 점검\n"
+                    "- `/signals` 로 오늘 사이클 결과 확인\n"
+                    "- NAS 로그에서 원인 파악\n\n"
+                    "조치 후 `/resume` 으로 직접 풀어주세요."
+                ),
+            )
+        else:
+            telegram.send(
+                ctx.settings.telegram,
+                (
+                    "🚨 *긴급 — 에러 급증 감지*\n\n"
+                    f"최근 1시간 동안 에러가 *{recent_1h}건* 쌓였어요.\n"
+                    "뭔가 잘못 돌고 있을 수 있어서 **신규 구매를 자동으로 차단**했습니다.\n"
+                    "(갖고 있는 주식의 자동 판매는 계속 작동합니다.)\n\n"
+                    f"_{_AUTO_KILL_RECOVERY_WINDOW_MIN}분 동안 에러가 없으면 알아서 다시 풀려요._\n"
+                    "_급하면 `/status` 로 상태 확인 후 `/resume` 으로 직접 풀 수도 있어요._"
+                ),
+            )
     except Exception:
         log.exception("에러 급증 알림 전송 실패")
 
@@ -222,6 +295,25 @@ def close_briefing_job(ctx: BotContext) -> None:
         log.exception("장 마감 브리핑 실패")
 
 
+def accuracy_eval_job(ctx: BotContext) -> None:
+    """평일 16:30 KST — 사후 정확도 평가.
+
+    signals 테이블에서 5 거래일 경과한 buy/sell 판단을 꺼내
+    해당 종목의 5 거래일 뒤 종가 기준 forward return 을 DB 에 기록.
+    `/accuracy` 커맨드로 confidence 구간별 집계 확인 가능.
+    """
+    from trading_bot.utils.calendar_kr import is_trading_day
+    if not is_trading_day(datetime.now().date()):
+        return
+    try:
+        from trading_bot.signals import accuracy
+        result = accuracy.evaluate_pending_signals(ctx.kis)
+        if result["evaluated"] > 0:
+            log.info("사후 정확도 평가 완료: %s", result)
+    except Exception:
+        log.exception("사후 정확도 평가 실패")
+
+
 def credentials_watcher_job(ctx: BotContext) -> None:
     """5분마다 data/credentials.env 의 mtime 을 확인, 변경 감지 시 자동 재로드.
 
@@ -278,7 +370,7 @@ def credentials_watcher_job(ctx: BotContext) -> None:
     # KisClient 원자적 교체
     with ctx.trading_lock:
         old_kis = ctx.kis
-        new_kis = KisClient(new_cfg, ctx.settings.kis_quote)
+        new_kis = KisClient.from_settings_with_override(ctx.settings, new_cfg)
         ctx.settings.kis = new_cfg
         ctx.kis = new_kis
         try:
@@ -319,9 +411,18 @@ def main() -> int:
 
     init_db()
     llm = build_llm(settings)
-    kis = KisClient(settings.kis, settings.kis_quote)
+    kis = KisClient.from_settings(settings)
     risk = RiskManager(settings)
     ctx = BotContext(settings=settings, kis=kis, risk=risk, llm=llm)
+
+    # universe 섹터 자동 백필 — settings.yaml 에서 처음 올라온 종목은 sector 가
+    # 비어있으니 KIS inquire-price 로 업종명을 가져와 universe.json 에 저장.
+    # 섹터 분산 리스크 게이트가 참조. 실패해도 기동은 계속 (sector 없으면 우회).
+    try:
+        from trading_bot.bot.universe_helper import backfill_sectors
+        backfill_sectors(settings.universe, kis)
+    except Exception:
+        log.exception("universe 섹터 백필 실패 (기동은 계속)")
 
     # 기동 시점의 GHCR :latest digest 를 스냅샷 → 이후 /update 의
     # "최신 여부" 비교 기준. 네트워크 실패해도 봇 기동은 계속.
@@ -424,6 +525,15 @@ def main() -> int:
         CronTrigger(day_of_week="mon-fri", hour=15, minute=35),
         args=[ctx],
         id="close_briefing",
+        max_instances=1,
+        coalesce=True,
+    )
+    # 사후 정확도 평가 — 평일 16:30 KST (장 마감 브리핑 이후)
+    scheduler.add_job(
+        accuracy_eval_job,
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=30),
+        args=[ctx],
+        id="accuracy_eval",
         max_instances=1,
         coalesce=True,
     )
