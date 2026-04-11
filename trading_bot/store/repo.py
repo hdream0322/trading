@@ -366,3 +366,135 @@ def update_position_hwm(code: str, high_water_mark: float, trailing_active: bool
 def delete_position_state(code: str) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM position_state WHERE code = ?", (code,))
+
+
+# ─────────────────────────────────────────────────────────────
+# 사후 정확도 트래킹 (v0.6.0)
+# ─────────────────────────────────────────────────────────────
+
+def get_signals_awaiting_eval(cutoff_ts: str) -> list[dict[str, Any]]:
+    """평가 대상 signal — decision 이 buy/sell 이고 N거래일 경과했지만 아직
+    realized_return_pct 가 NULL 인 것들.
+
+    cutoff_ts: 이 시각보다 오래된 signal 만 대상 (ISO format).
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT id, ts, code, name, decision, confidence
+                 FROM signals
+                WHERE decision IN ('buy', 'sell')
+                  AND realized_return_pct IS NULL
+                  AND ts <= ?
+                ORDER BY ts ASC
+                LIMIT 500""",
+            (cutoff_ts,),
+        )
+        return [
+            {
+                "id": int(r[0]),
+                "ts": r[1],
+                "code": r[2],
+                "name": r[3],
+                "decision": r[4],
+                "confidence": r[5],
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def update_signal_forward_return(
+    signal_id: int,
+    realized_return_pct: float,
+    evaluated_at: str,
+) -> None:
+    with _conn() as conn:
+        conn.execute(
+            """UPDATE signals
+                  SET realized_return_pct = ?,
+                      evaluated_at = ?
+                WHERE id = ?""",
+            (realized_return_pct, evaluated_at, signal_id),
+        )
+
+
+def get_accuracy_by_confidence_bucket() -> list[dict[str, Any]]:
+    """confidence 구간별 적중률/평균수익률/건수 집계.
+
+    "적중" 정의:
+      - buy: realized_return_pct >= +1%
+      - sell: realized_return_pct <= -1%
+    구간: [0.75, 0.80), [0.80, 0.85), [0.85, 0.90), [0.90, 1.01)
+    """
+    buckets = [(0.75, 0.80), (0.80, 0.85), (0.85, 0.90), (0.90, 1.01)]
+    out: list[dict[str, Any]] = []
+    with _conn() as conn:
+        for low, high in buckets:
+            cur = conn.execute(
+                """SELECT decision, realized_return_pct
+                     FROM signals
+                    WHERE decision IN ('buy', 'sell')
+                      AND confidence >= ? AND confidence < ?
+                      AND realized_return_pct IS NOT NULL""",
+                (low, high),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                out.append({
+                    "low": low, "high": high,
+                    "count": 0, "hit_rate": 0.0, "avg_return": 0.0,
+                })
+                continue
+            total = len(rows)
+            hits = 0
+            total_return = 0.0
+            for decision, ret in rows:
+                r = float(ret or 0)
+                total_return += r
+                if decision == "buy" and r >= 1.0:
+                    hits += 1
+                elif decision == "sell" and r <= -1.0:
+                    hits += 1
+            out.append({
+                "low": low, "high": high,
+                "count": total,
+                "hit_rate": hits / total * 100.0,
+                "avg_return": total_return / total,
+            })
+    return out
+
+
+def get_accuracy_by_cross_check() -> dict[str, dict[str, Any]]:
+    """교차검증 태그별 사후 수익률 집계.
+
+    [DIRECTION_CONFLICT] / [LLM_HOLD] 태그가 붙은 signal 의 사후 수익률이
+    prefilter 방향으로 봤을 때 맞았는지 / 틀렸는지 확인 — LLM vs prefilter
+    중 누가 더 정확했는지 판단 근거.
+    """
+    result: dict[str, dict[str, Any]] = {
+        "DIRECTION_CONFLICT": {"count": 0, "avg_return": 0.0, "sum_return": 0.0},
+        "LLM_HOLD": {"count": 0, "avg_return": 0.0, "sum_return": 0.0},
+    }
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT llm_reasoning, realized_return_pct
+                 FROM signals
+                WHERE realized_return_pct IS NOT NULL
+                  AND llm_reasoning LIKE '[%'""",
+        )
+        for reasoning, ret in cur.fetchall():
+            if not reasoning or ret is None:
+                continue
+            r = float(ret)
+            tag: str | None = None
+            if reasoning.startswith("[DIRECTION_CONFLICT"):
+                tag = "DIRECTION_CONFLICT"
+            elif reasoning.startswith("[LLM_HOLD"):
+                tag = "LLM_HOLD"
+            if tag:
+                result[tag]["count"] += 1
+                result[tag]["sum_return"] += r
+    for tag in result:
+        c = result[tag]["count"]
+        if c > 0:
+            result[tag]["avg_return"] = result[tag]["sum_return"] / c
+    return result

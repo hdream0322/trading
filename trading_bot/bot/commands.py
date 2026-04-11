@@ -37,6 +37,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("status", "지금 상태 (자산·킬스위치·비용)"),
     ("positions", "갖고 있는 주식"),
     ("signals", "오늘 매매 추천 (최근 10개)"),
+    ("accuracy", "AI 판단 적중률 (사후 검증)"),
     ("cost", "오늘 AI 분석 비용"),
     ("mode", "거래 모드 조회/전환 (실전/모의)"),
     ("universe", "추적 종목 목록/추가/제거"),
@@ -424,7 +425,7 @@ def _swap_kis_mode(ctx: BotContext, new_mode: str, new_cfg: KisConfig) -> None:
     """
     with ctx.trading_lock:
         old_kis = ctx.kis
-        new_kis = KisClient(new_cfg, ctx.settings.kis_quote)
+        new_kis = KisClient.from_settings_with_override(ctx.settings, new_cfg)
         # BotContext.settings 는 frozen 아님 → mutate 가능
         ctx.settings.kis = new_cfg
         ctx.kis = new_kis
@@ -472,6 +473,7 @@ def _universe_list(ctx: BotContext) -> dict[str, Any]:
         for item in ctx.settings.universe:
             code = item["code"]
             name = item["name"]
+            sector = str(item.get("sector", "")).strip()
             price_str = "?"
             try:
                 price_output = ctx.kis.get_price(code)
@@ -480,7 +482,8 @@ def _universe_list(ctx: BotContext) -> dict[str, Any]:
                     price_str = f"{price:,}원"
             except Exception:
                 pass
-            lines.append(f"- {name} (`{code}`) · {price_str}")
+            suffix = f" · _{sector}_" if sector else ""
+            lines.append(f"- {name} (`{code}`) · {price_str}{suffix}")
     lines.append(f"\n점검 주기: {ctx.settings.cycle_minutes}분")
     lines.append(
         "\n추가: `/universe add 005490`\n"
@@ -572,7 +575,11 @@ def _universe_remove_preview(ctx: BotContext, code: str) -> dict[str, Any]:
 
 
 def _execute_universe_add(ctx: BotContext, code: str) -> dict[str, Any]:
-    """확인 버튼 탭 → 실제 추가. 중복/오류는 여기서도 방어."""
+    """확인 버튼 탭 → 실제 추가. 중복/오류는 여기서도 방어.
+
+    추가 시 KIS inquire-price 응답의 업종명(bstp_kor_isnm) 을 sector 필드로
+    즉시 박아둔다 — 섹터 분산 게이트에서 바로 사용 가능.
+    """
     for item in ctx.settings.universe:
         if item["code"] == code:
             return _reply(f"ℹ️ *{item['name']}* (`{code}`) 는 이미 추적 중입니다")
@@ -580,16 +587,21 @@ def _execute_universe_add(ctx: BotContext, code: str) -> dict[str, Any]:
         name = ctx.kis.get_stock_name(code)
     except Exception as exc:
         return _reply(f"❌ 종목 조회 실패\n`{exc}`")
-    new_universe = list(ctx.settings.universe) + [{"code": code, "name": name}]
+    sector = ctx.kis.get_stock_sector(code)
+    entry: dict[str, str] = {"code": code, "name": name}
+    if sector:
+        entry["sector"] = sector
+    new_universe = list(ctx.settings.universe) + [entry]
     try:
         save_universe_override(new_universe)
     except Exception as exc:
         log.exception("universe.json 저장 실패")
         return _reply(f"❌ 저장 실패\n`{exc}`")
     ctx.settings.universe = new_universe
+    sector_line = f"\n업종: _{sector}_" if sector else ""
     return _reply(
         f"✅ *추적 목록에 추가됨*\n\n"
-        f"*{name}* (`{code}`)\n\n"
+        f"*{name}* (`{code}`){sector_line}\n\n"
         f"이제 총 {len(new_universe)}개 종목을 추적합니다.\n"
         f"다음 점검부터 이 종목도 함께 봅니다."
     )
@@ -755,6 +767,69 @@ def cmd_cost(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"_AI (Claude)가 종목별 매매 판단을 내릴 때마다 청구됩니다._\n"
         f"_한도에 도달하면 남은 시간동안 AI 판단 없이 관망합니다._"
     )
+
+
+def cmd_accuracy(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """AI 판단 사후 정확도 — confidence 구간별 적중률 + 교차검증 태그 집계.
+
+    적중 정의: buy → 5 거래일 뒤 +1% 이상, sell → -1% 이하.
+    """
+    try:
+        buckets = repo.get_accuracy_by_confidence_bucket()
+        cross = repo.get_accuracy_by_cross_check()
+    except Exception as exc:
+        return _reply(f"❌ 정확도 조회 실패\n`{exc}`")
+
+    total = sum(b["count"] for b in buckets)
+    if total == 0:
+        return _reply(
+            "*AI 판단 적중률*\n\n"
+            "_아직 평가된 판단이 없어요._\n"
+            "_buy/sell 판단이 5 거래일 지나면 결과가 쌓입니다._"
+        )
+
+    lines = [
+        "*AI 판단 적중률 (사후 검증)*",
+        "_buy/sell 판단 5 거래일 뒤의 수익률 기반_",
+        f"_총 평가 건수: {total}건_",
+        "",
+        "*확신도 구간별 적중률*",
+    ]
+    for b in buckets:
+        if b["count"] == 0:
+            lines.append(
+                f"- `{int(b['low']*100)}~{int(b['high']*100)}%` 없음"
+            )
+            continue
+        lines.append(
+            f"- `{int(b['low']*100)}~{int(b['high']*100)}%` "
+            f"{b['count']}건 · 적중 {b['hit_rate']:.0f}% · "
+            f"평균 {b['avg_return']:+.2f}%"
+        )
+
+    conflict = cross.get("DIRECTION_CONFLICT", {})
+    hold = cross.get("LLM_HOLD", {})
+    if conflict.get("count", 0) > 0 or hold.get("count", 0) > 0:
+        lines.append("")
+        lines.append("*교차검증 불일치 집계*")
+        if conflict.get("count", 0) > 0:
+            lines.append(
+                f"- 정반대 판단 ({conflict['count']}건) · "
+                f"평균 {conflict['avg_return']:+.2f}%"
+            )
+        if hold.get("count", 0) > 0:
+            lines.append(
+                f"- LLM이 관망 선택 ({hold['count']}건) · "
+                f"평균 {hold['avg_return']:+.2f}%"
+            )
+        lines.append(
+            "_(prefilter 기준 수익률. 수치가 양수면 프리필터 방향이 맞았다는 뜻.)_"
+        )
+
+    lines.append("")
+    lines.append("_적중률이 50% 근처면 AI 가 덜 맞추는 거예요._")
+    lines.append("_그러면 settings.yaml 의 confidence_threshold 를 올려보세요._")
+    return _reply("\n".join(lines))
 
 
 def cmd_stop(ctx: BotContext, args: list[str]) -> dict[str, Any]:
@@ -1289,7 +1364,7 @@ def cmd_reload(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     # KisClient 원자적 교체 (trading_lock 으로 사이클과 직렬화)
     with ctx.trading_lock:
         old_kis = ctx.kis
-        new_kis = KisClient(new_cfg, ctx.settings.kis_quote)
+        new_kis = KisClient.from_settings_with_override(ctx.settings, new_cfg)
         ctx.settings.kis = new_cfg
         ctx.kis = new_kis
         try:
@@ -1437,7 +1512,7 @@ def cmd_setcreds(ctx: BotContext, args: list[str]) -> dict[str, Any]:
             new_cfg = build_trade_cfg(mode)
             with ctx.trading_lock:
                 old_kis = ctx.kis
-                new_kis = KisClient(new_cfg, ctx.settings.kis_quote)
+                new_kis = KisClient.from_settings_with_override(ctx.settings, new_cfg)
                 ctx.settings.kis = new_cfg
                 ctx.kis = new_kis
                 try:
@@ -1537,6 +1612,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/positions": cmd_positions,
     "/signals": cmd_signals,
     "/cost": cmd_cost,
+    "/accuracy": cmd_accuracy,
     "/stop": cmd_stop,
     "/kill": cmd_stop,
     "/resume": cmd_resume,

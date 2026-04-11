@@ -93,6 +93,13 @@ def init_db() -> sqlite3.Connection:
     if "llm_cost_usd" not in cols:
         conn.execute("ALTER TABLE signals ADD COLUMN llm_cost_usd REAL")
         log.info("signals 테이블에 llm_cost_usd 컬럼 추가 (마이그레이션)")
+    # v0.6.0 — 사후 정확도 트래킹 컬럼
+    if "realized_return_pct" not in cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN realized_return_pct REAL")
+        log.info("signals 테이블에 realized_return_pct 컬럼 추가 (마이그레이션)")
+    if "evaluated_at" not in cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN evaluated_at TEXT")
+        log.info("signals 테이블에 evaluated_at 컬럼 추가 (마이그레이션)")
 
     cur = conn.execute("PRAGMA table_info(orders)")
     cols_orders = {row[1] for row in cur.fetchall()}
