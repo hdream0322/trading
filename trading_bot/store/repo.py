@@ -101,6 +101,31 @@ def get_today_order_count() -> int:
         return int(cur.fetchone()[0])
 
 
+def get_today_orders() -> list[dict[str, object]]:
+    """오늘 들어온 주문 내역 (rejected 포함). 장 마감 브리핑 요약용."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT ts, code, name, side, qty, status, reason
+                 FROM orders
+                WHERE substr(ts, 1, 10) = ?
+                ORDER BY id ASC""",
+            (today,),
+        )
+        return [
+            {
+                "ts": r[0],
+                "code": r[1],
+                "name": r[2],
+                "side": r[3],
+                "qty": int(r[4] or 0),
+                "status": r[5],
+                "reason": r[6],
+            }
+            for r in cur.fetchall()
+        ]
+
+
 # ─────────────────────────────────────────────────────────────
 # position_state — 손절/익절/트레일링 스톱 상태 추적
 # ─────────────────────────────────────────────────────────────

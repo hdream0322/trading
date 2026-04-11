@@ -73,12 +73,19 @@ python3 -m compileall -q trading_bot/
 6. 중복 진입 차단
 7. 동시 보유 종목 수 + 포지션 사이징
 
-### APScheduler 크론 작업 4개 (`main.py`)
+### APScheduler 크론 작업 6개 (`main.py`)
 
 1. **cycle_job** — 평일 09:00~15:30 KST 매 `cycle_minutes` (기본 10분) 점검
 2. **auto_update_job** — 매일 02:00 KST 자동 업데이트 체크 (Watchtower HTTP API 호출)
 3. **paper_expiry_check_job** — 매일 08:00 KST 모의 계좌 90일 만료 체크
 4. **credentials_watcher_job** — 5분마다 `data/credentials.env` mtime 감시, 변경 시 자동 재로드
+5. **open_briefing_job** — 평일 09:00 KST 장 시작 브리핑 (잔고/보유종목 요약)
+6. **close_briefing_job** — 평일 15:35 KST 장 마감 브리핑 (오늘 주문/AI 비용 요약)
+
+hold-only 사이클(주문/청산/차단/에러 0건)은 **조용히 넘어가며** 텔레그램 메시지를
+보내지 않는다. 대신 하루 2회 장 시작/마감 브리핑으로 봇이 살아있음을 알린다. 조용
+모드(`data/QUIET_MODE`)를 켜면 브리핑까지 끄고 이벤트 알림만 남는다. 차단·에러·
+주문·청산 알림은 조용 모드와 무관하게 항상 전송된다.
 
 ## 런타임 상태 파일 (`data/` 볼륨)
 
@@ -90,13 +97,14 @@ python3 -m compileall -q trading_bot/
 | `trading.sqlite` | 시그널·주문·에러·포지션 기록 | `store/db.py`, `store/repo.py` |
 | `KILL_SWITCH` | 긴급 정지 플래그 (파일 존재 시 구매 차단) | `risk/kill_switch.py`, `/stop` / `/resume` |
 | `AUTO_UPDATE_DISABLED` | 자동 업데이트 꺼짐 플래그 | `bot/update_manager.py`, `/update disable` |
+| `QUIET_MODE` | 조용 모드 플래그 (장 시작/마감 브리핑 끔) | `bot/quiet_mode.py`, `/quiet on` / `off` |
 | `current_image_digest` | 기동 시 snapshot 한 GHCR digest (/update 비교용) | `bot/update_manager.py` |
 | `kis_mode_override` | paper/live 모드 런타임 오버라이드 | `bot/mode_switch.py`, `/mode` |
 | `credentials.env` | 자격증명 오버라이드 (`.env` 보다 우선) | `/setcreds`, `nano`, `credentials_watcher_job` |
 | `paper_account_issued` | 모의 계좌 사용 시작 시각 (90일 만료 카운트다운) | `bot/expiry.py`, `/reload`, `/setcreds paper` |
 | `universe.json` | 추적 종목 런타임 오버라이드 | `/universe add`, `/universe remove` |
 
-## 텔레그램 커맨드 (17개)
+## 텔레그램 커맨드 (18개)
 
 **시작**
 - `/menu`, `/start` — 메인 허브 (자주 쓰는 동작을 버튼 하나로)
@@ -106,6 +114,7 @@ python3 -m compileall -q trading_bot/
 
 **조작**
 - `/stop`, `/resume` — 킬 스위치 토글
+- `/quiet` — 조용 모드 토글 (장 시작/마감 브리핑 끔). 주문/청산/차단/에러 알림은 그대로
 - `/sell` — 보유 종목 목록을 버튼으로 띄워 선택 (또는 `/sell CODE` 로 직접 지정)
 - `/positions` — 목록 + 종목별 판매 버튼
 - `/cycle` — 사이클 1회 즉시 실행
@@ -188,6 +197,12 @@ nano data/credentials.env
 
 - **기계적 청산 우선**
   손절/익절/트레일링은 LLM 이 아닌 고정 규칙. 속도/신뢰성/비용 모두 유리.
+
+- **hold-only 사이클은 조용, 이벤트만 알림 + 장 시작/마감 브리핑 2회**
+  매 10분 텔레그램 알림은 스팸이라, 사이클 요약은 `orders_submitted`/`exits_executed`/
+  `orders_rejected_by_risk`/`errors` 중 하나라도 있을 때만 전송한다. 존재감은 장 시작
+  09:00 과 장 마감 15:35 의 브리핑으로 유지. `/quiet` 로 브리핑까지 끌 수 있지만
+  중요 이벤트(차단/에러/주문/청산)는 조용 모드에서도 전송된다.
 
 - **`:latest` 이미지 태그는 tag push 에서만 갱신**
   main push 로 빌드된 이미지는 `:main` 과 `:sha-xxx` 만 받고 `:latest` 는 받지 않음.

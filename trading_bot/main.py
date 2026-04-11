@@ -4,6 +4,7 @@ import argparse
 import logging
 import signal
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -25,6 +26,7 @@ from trading_bot.logging_setup import setup_logging
 from trading_bot.notify import telegram
 from trading_bot.risk import kill_switch
 from trading_bot.risk.manager import RiskManager
+from trading_bot.signals.briefing import send_close_briefing, send_open_briefing
 from trading_bot.signals.cycle import run_cycle
 from trading_bot.signals.llm import ClaudeSignalClient
 from trading_bot.store.db import init_db
@@ -88,6 +90,33 @@ def paper_expiry_check_job(ctx: BotContext) -> None:
     if message:
         log.warning("paper 만료 경고: 남은 %s일", days_left)
         telegram.send(ctx.settings.telegram, message)
+
+
+def open_briefing_job(ctx: BotContext) -> None:
+    """평일 09:00 KST — 장 시작 브리핑.
+
+    조용 모드면 quiet_mode 측에서 스킵. 휴장일이면 전송 생략.
+    """
+    from trading_bot.utils.calendar_kr import is_trading_day
+    if not is_trading_day(datetime.now().date()):
+        log.info("휴장일 — 장 시작 브리핑 스킵")
+        return
+    try:
+        send_open_briefing(ctx.settings, ctx.kis)
+    except Exception:
+        log.exception("장 시작 브리핑 실패")
+
+
+def close_briefing_job(ctx: BotContext) -> None:
+    """평일 15:35 KST — 장 마감 브리핑."""
+    from trading_bot.utils.calendar_kr import is_trading_day
+    if not is_trading_day(datetime.now().date()):
+        log.info("휴장일 — 장 마감 브리핑 스킵")
+        return
+    try:
+        send_close_briefing(ctx.settings, ctx.kis)
+    except Exception:
+        log.exception("장 마감 브리핑 실패")
 
 
 def credentials_watcher_job(ctx: BotContext) -> None:
@@ -256,6 +285,24 @@ def main() -> int:
         CronTrigger(minute="*/5"),
         args=[ctx],
         id="credentials_watcher",
+        max_instances=1,
+        coalesce=True,
+    )
+    # 장 시작 브리핑 — 평일 09:00 KST
+    scheduler.add_job(
+        open_briefing_job,
+        CronTrigger(day_of_week="mon-fri", hour=9, minute=0),
+        args=[ctx],
+        id="open_briefing",
+        max_instances=1,
+        coalesce=True,
+    )
+    # 장 마감 브리핑 — 평일 15:35 KST (마지막 사이클 15:30 과 겹치지 않게)
+    scheduler.add_job(
+        close_briefing_job,
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=35),
+        args=[ctx],
+        id="close_briefing",
         max_instances=1,
         coalesce=True,
     )

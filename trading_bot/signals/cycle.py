@@ -408,6 +408,13 @@ def _notify_summary(
     balance_summary: dict[str, Any],
     events: list[dict[str, Any]],
 ) -> None:
+    # hold-only 사이클(주문/청산/차단/에러 전부 0)은 알림 스팸이라 스킵.
+    # 이벤트가 하나라도 있거나 에러가 있을 때만 전송한다.
+    # 장 시작/마감 브리핑은 main.py 의 별도 크론에서 처리.
+    if not events and summary.get("errors", 0) == 0:
+        log.info("이벤트 없는 사이클 — 텔레그램 요약 스킵")
+        return
+
     badge = mode_badge(settings.kis.mode)
     lines = [
         f"*점검 결과* {badge} — {datetime.now():%Y-%m-%d %H:%M}",

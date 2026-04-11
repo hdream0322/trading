@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from trading_bot import __version__ as bot_version
-from trading_bot.bot import expiry, mode_switch, runtime_state, update_manager
+from trading_bot.bot import expiry, mode_switch, quiet_mode, runtime_state, update_manager
 from trading_bot.bot.context import BotContext
 from trading_bot.config import (
     CREDENTIALS_OVERRIDE_FILE,
@@ -43,6 +43,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("about", "봇 버전 및 전체 설정"),
     ("stop", "🛑 긴급 정지 (새로 구매 차단)"),
     ("resume", "✅ 긴급 정지 풀기"),
+    ("quiet", "🔕 조용 모드 토글 (장 시작/마감 브리핑 끔)"),
     ("sell", "특정 종목 전부 팔기 (확인 필요)"),
     ("cycle", "지금 바로 점검 실행"),
     ("update", "최신 버전 확인"),
@@ -264,6 +265,7 @@ HELP_TEXT = """*자동매매 봇 사용법*
 *⚙️ 조작*
 /stop — 🛑 긴급 정지 (새로 구매 안 함)
 /resume — ✅ 긴급 정지 풀기
+/quiet — 🔕 조용 모드 (장 시작/마감 브리핑 끔, 주문·에러는 그대로)
 /sell — 보유 종목 목록에서 선택해 판매
 /sell 005930 — 코드 직접 지정 판매
 /cycle — 지금 바로 점검 한 번 돌리기
@@ -733,6 +735,52 @@ def cmd_resume(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         return _reply("✅ 긴급 정지는 이미 꺼져있습니다")
     kill_switch.deactivate()
     return _reply("✅ *긴급 정지 풀림*\n다음 점검부터 새로 구매가 가능합니다.")
+
+
+def cmd_quiet(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """조용 모드 토글.
+
+    - 인자 없음: 현재 상태 안내
+    - `/quiet on`: 조용 모드 켜기 (장 시작/마감 브리핑 끔)
+    - `/quiet off`: 조용 모드 끄기
+
+    조용 모드라도 주문/청산/차단/에러 알림은 계속 전송된다.
+    """
+    sub = (args[0].strip().lower() if args else "").strip()
+    active = quiet_mode.is_active()
+
+    if sub in ("on", "켜기", "활성"):
+        if active:
+            return _reply("🔕 이미 조용 모드입니다")
+        quiet_mode.activate(reason="telegram /quiet on")
+        return _reply(
+            "🔕 *조용 모드 켜짐*\n"
+            "장 시작(09:00) · 장 마감(15:35) 브리핑을 끕니다.\n"
+            "구매 / 판매 / 자동 청산 / 차단 / 에러 알림은 그대로 옵니다.\n\n"
+            "`/quiet off` 로 다시 켤 수 있습니다."
+        )
+
+    if sub in ("off", "끄기", "해제"):
+        if not active:
+            return _reply("🔔 이미 일반 모드입니다")
+        quiet_mode.deactivate()
+        return _reply(
+            "🔔 *조용 모드 꺼짐*\n"
+            "내일부터 장 시작/마감 브리핑이 다시 옵니다."
+        )
+
+    status_line = "🔕 *조용 모드 켜짐*" if active else "🔔 *일반 모드*"
+    detail = (
+        "장 시작/마감 브리핑이 꺼져 있습니다.\n"
+        "주문·청산·차단·에러 알림은 계속 전송됩니다."
+        if active
+        else "장 시작(09:00)과 장 마감(15:35)에 브리핑을 보내드려요."
+    )
+    return _reply(
+        f"{status_line}\n{detail}\n\n"
+        "`/quiet on` — 브리핑 끄기\n"
+        "`/quiet off` — 브리핑 다시 켜기"
+    )
 
 
 def cmd_sell(ctx: BotContext, args: list[str]) -> dict[str, Any]:
@@ -1449,6 +1497,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/stop": cmd_stop,
     "/kill": cmd_stop,
     "/resume": cmd_resume,
+    "/quiet": cmd_quiet,
     "/sell": cmd_sell,
     "/cycle": cmd_cycle,
     "/update": cmd_update,
