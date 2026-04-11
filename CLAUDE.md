@@ -486,6 +486,7 @@ scripts/
 | v0.2.6 | Watchtower ReadTimeout 을 성공으로 처리 |
 | v0.2.7 | /update 2단계 확인 플로우, :latest 는 tag push 전용 |
 | v0.2.8 | **런타임 제어 대폭 강화**: /mode, /reload, /restart, /setcreds, 만료 자동 알림, credentials 자동 감시 |
+| v0.3.0 | **알림 스팸 정리**: hold-only 사이클 조용히 넘김, 장 시작/마감 브리핑 2회, /quiet 토글 |
 
 ## 개발 로드맵 (선택)
 
