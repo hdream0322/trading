@@ -588,14 +588,20 @@ def _notify_summary(
     badge = mode_badge(settings.kis.mode)
     lines = [
         f"*점검 결과* {badge} — {datetime.now():%Y-%m-%d %H:%M}",
-        f"총 자산 {fmt_won(balance_summary.get('tot_evlu_amt'))} · "
-        f"현금 {fmt_won(balance_summary.get('dnca_tot_amt'))} · "
+        "",
+        "*💰 자산*",
+        f"총 {fmt_won(balance_summary.get('tot_evlu_amt'))} · "
+        f"현금 {fmt_won(balance_summary.get('dnca_tot_amt'))}",
         f"어제 대비 {fmt_pct(balance_summary.get('asst_icdc_erng_rt'))}",
-        f"점검 종목 {summary['total']}개 / 후보 {summary['candidates']}개 / 오류 {summary['errors']}개",
+        "",
+        "*🔍 점검*",
+        f"종목 {summary['total']}개 · 후보 {summary['candidates']}개 · 오류 {summary['errors']}개",
         f"판단: 구매 {summary['buy']} · 판매 {summary['sell']} · 관망 {summary['hold']}",
-        f"주문: 접수 {summary['orders_submitted']} · 안전장치 차단 {summary['orders_rejected_by_risk']}",
-        f"자동 청산: {summary.get('exits_executed', 0)}건",
-        f"AI 비용(이번 점검) ${summary['cost_usd']:.4f} · 오늘 누적 ${daily_cost:.4f}",
+        f"주문 접수 {summary['orders_submitted']}건 · 안전장치 차단 "
+        f"{summary['orders_rejected_by_risk']}건 · 자동 청산 "
+        f"{summary.get('exits_executed', 0)}건",
+        "",
+        f"_AI 비용 이번 ${summary['cost_usd']:.4f} · 오늘 누적 ${daily_cost:.4f}_",
     ]
 
     exits = [e for e in events if e.get("type") == "exit"]

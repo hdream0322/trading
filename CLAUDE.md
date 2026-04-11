@@ -1,580 +1,247 @@
 # CLAUDE.md
 
 이 파일은 Claude Code 가 이 저장소에서 작업할 때 참고하는 프로젝트 가이드입니다.
+원칙: **코드/커밋/릴리스 노트에서 파악 가능한 내용은 여기 적지 않는다.** 여기에는
+코드만 봐선 모르는 하드 정보(KIS API 버그, 되돌리지 말아야 할 디자인 결정, 사용자
+선호)만 남긴다.
 
 ## 프로젝트 개요
 
-한국투자증권(KIS) Open API 와 Anthropic Claude API 를 결합한 **국내주식 자동매매 봇**.
+한국투자증권(KIS) Open API + Anthropic Claude API 를 결합한 **국내주식 자동매매 봇**.
 평일 09:00~15:30 KST 동안 10분 주기로 관심 종목을 점검하고, AI 판단과 리스크 매니저의
-다단계 게이트를 거쳐 자동으로 시장가 주문을 실행한다. Synology NAS Docker 환경을 기본
-상정하며 **텔레그램 하나로 전 기능 원격 제어** 가능 (SSH 접근 없이도 운용 가능).
+다단계 게이트를 거쳐 자동 시장가 주문. Synology NAS Docker 환경 + **텔레그램 하나로
+전 기능 원격 제어** (SSH 없이도 운용 가능).
 
-## 기술 스택
+기술 스택: Python 3.11+, httpx, apscheduler, SQLite, Anthropic SDK, Docker + GHCR + Watchtower.
 
-- **Python 3.11+** (로컬 개발은 3.9 도 동작하지만 3.11 권장)
-- httpx, pyyaml, python-dotenv, anthropic, apscheduler
-- SQLite (상태/로그/시그널/주문 기록)
-- Docker + GHCR + Watchtower (자동 배포 파이프라인)
-- GitHub Actions (CI/CD)
+세부 아키텍처·파일 구조·커맨드 목록은 코드 자체와 `README.md` 를 참고. 전체 사이클은
+`signals/cycle.py run_cycle`, 리스크 게이트는 `risk/manager.py RiskManager.check`,
+스케줄러 잡은 `main.py` 에 모여 있다.
 
 ## 개발 환경 세팅
 
 ```bash
-# venv + 의존성
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install "httpx[http2]>=0.27" "pyyaml>=6.0" "python-dotenv>=1.0" \
             "anthropic>=0.40" "apscheduler>=3.10,<4"
+cp .env.example .env && chmod 600 .env
 
-# .env 작성 (README 의 '처음 시작하기' 섹션 참고)
-cp .env.example .env
-chmod 600 .env
-
-# 단일 사이클 실행 (장외 시간에도 강제)
+# 단일 사이클 강제 실행 (장외 시간에도)
 PYTHONPATH=. .venv/bin/python -m trading_bot.main --once --force
 
-# 스케줄러 모드 (실제 운용처럼)
+# 스케줄러 모드
 PYTHONPATH=. .venv/bin/python -m trading_bot.main
 
-# 단계별 검증 스크립트
+# 컴파일 체크 (코드 수정 후 필수)
+python3 -m compileall -q trading_bot/
+
+# 단계별 검증
 PYTHONPATH=. .venv/bin/python scripts/stage3_verify.py  # 주문 경로
 PYTHONPATH=. .venv/bin/python scripts/stage4_verify.py  # 텔레그램 커맨드
 PYTHONPATH=. .venv/bin/python scripts/stage6_verify.py  # 청산 전략
-
-# 컴파일 체크 (모든 모듈 신택스 검증)
-python3 -m compileall -q trading_bot/
 ```
 
-## 아키텍처 요약
+## 런타임 상태 파일
 
-### 전체 점검 사이클 (`signals/cycle.py` run_cycle)
+컨테이너 재시작·이미지 업데이트에도 유지되어야 하는 상태는 **전부 `data/` 안**에 둔다
+(`docker-compose.yml` 볼륨 매핑으로 영속화, 이미지에 포함 안 됨, 권한 분리).
 
-1. **잔고 조회** — KIS `inquire-balance` (현재 모드 서버)
-2. **position_state 동기화** — 신규/청산된 포지션 반영, high_water_mark 갱신
-3. **자동 청산 체크** (보유 포지션 각각)
-   - 손절(동적): `stop_loss_pct = max(5, ATR × 1.5 / 현재가 × 100)` (양수 퍼센트).
-     `check_exit` 에서 `pnl_pct <= -stop_loss_pct` 로 비교.
-     → 대형주는 고정 5% 유지, 변동성 큰 종목은 자동으로 더 넓은 손절 폭 적용.
-     예) ATR=2000, 가격=25000 → dynamic=12 → stop_loss_pct=12 → −12% 에서 손절.
-   - 익절 (+15%), 트레일링 스톱 (+7% 활성 / 고점 대비 -4%)
-   - AI 판단 없이 기계적 규칙으로 즉시 시장가 판매 (장 시작/마감 변동성 구간에도 실행)
-4. **장 시작/마감 신규 매수 차단** — 09:00~09:10, 15:20~15:30 구간은 호가 형성/마감 변동성
-   큼 → 신규 매수만 차단, 청산은 그대로 허용
-5. **유니버스 셔플** — `random.shuffle(universe)` 로 종목 순서 편향 제거
-   (일일 LLM 비용 한도 도달 시 특정 종목만 매번 스킵되는 상황 방지)
-6. **유니버스 스캔** (새 진입 검토) — 종목당:
-   - 일봉 OHLCV 40개 조회 (실전 서버 강제)
-   - RSI + 거래량 비율 + SMA(20) 계산
-   - **1차 게이트**: 룰베이스 prefilter
-     - buy: `RSI < 35` AND `거래량 ≥ 1.2x` AND **`현재가 > SMA20` (추세 필터)**
-     - sell: `RSI > 70` AND `거래량 ≥ 1.2x`
-     - 추세 필터는 "떨어지는 칼날" (하락 추세 중 반복 매수) 차단
-   - **2차 게이트**: Claude LLM tool_use 구조화 판단 (decision + confidence + reasoning)
-     - **side_hint 미전달** — LLM 이 독립 판단 (확증 편향 제거)
-   - **3차 게이트**: confidence >= 0.75 임계값
-   - **3.5차 게이트**: prefilter side 와 LLM decision 교차검증 — 불일치 시 reject
-   - **4차 게이트**: 리스크 매니저 7단계
-7. **주문 실행** (시장가) → DB 기록 → Telegram 알림
-8. **체결 확인** (v0.5.0) — 이번 사이클에 제출된 주문이 있으면 **30초 일괄 대기**
-   후 KIS `inquire-daily-ccld` 로 상태 확인.
-   - 완전 체결 → `status=filled` + 평균가 기록
-   - 부분 체결 → `status=partial` (다음 사이클 재확인)
-   - 미체결 매수 → **자동 취소** (`cancel_order`, 다음 사이클 재판단)
-   - 미체결 판매 → **계속 대기** (손절/청산이라 강제 취소 안 함)
+`trading.sqlite`, `KILL_SWITCH`, `KILL_SWITCH_AUTO_RELEASE.log`, `AUTO_UPDATE_DISABLED`,
+`QUIET_MODE`, `current_image_digest`, `kis_mode_override`, `credentials.env`,
+`paper_account_issued`, `universe.json`, `backup/trading_YYYYMMDD.sqlite`.
 
-### 리스크 매니저 단계 (`risk/manager.py`)
-
-1. side 검증 (buy/sell 만)
-2. 킬 스위치 (구매만 차단, 판매는 허용)
-3. 일일 주문 수 한도
-4. 일일 손실 한도 (매수만)
-5. 종목별 쿨다운
-6. 중복 진입 차단
-7. 동시 보유 종목 수
-8. **섹터(업종) 분산 한도** (v0.5.0) — universe 에 박힌 `sector` 로 현재 보유
-   종목의 섹터별 카운트를 계산, 동일 섹터 `max_per_sector` (기본 2) 도달 시 차단
-9. 포지션 사이징
-
-### APScheduler 크론 작업 10개 (`main.py`)
-
-1. **cycle_job** — 평일 09:00~15:30 KST 매 `cycle_minutes` (기본 10분) 점검
-2. **auto_update_job** — 매일 02:00 KST 자동 업데이트 체크 (Watchtower HTTP API 호출)
-3. **db_backup_job** — 매일 01:55 KST SQLite 스냅샷 백업 + 7일 초과분 제거
-4. **paper_expiry_check_job** — 매일 08:00 KST 모의 계좌 90일 만료 체크
-5. **credentials_watcher_job** — 5분마다 `data/credentials.env` mtime 감시, 변경 시 자동 재로드
-6. **error_spike_watchdog_job** — 5분마다 최근 1시간 에러 카운트 체크, 임계(10건) 초과 시 자동 킬스위치 + 긴급 알림
-7. **open_briefing_job** — 평일 09:00 KST 장 시작 브리핑 (잔고/보유종목 요약)
-8. **close_briefing_job** — 평일 15:35 KST 장 마감 브리핑 (오늘 주문/AI 비용/사후 설명 + pnl_daily 기록)
-9. **accuracy_eval_job** (v0.5.0) — 평일 16:30 KST 사후 정확도 평가: 5 거래일
-   경과한 buy/sell signal 에 대해 forward return 계산 → `signals.realized_return_pct` 업데이트
-10. **weekly_holiday_reminder_job** — 매주 월요일 07:00 KST 휴장일 YAML 점검 리마인더 (임시공휴일 대응)
-
-**알림 정책**
-- 기본(`/quiet off`): 10분마다 사이클 요약 전송 (hold 여도). 거래/청산/차단/에러는
-  그 안에 섹션으로 묶여 나감.
-- `/quiet on`: hold-only 사이클 요약은 스킵. 거래/청산/차단/에러 가 있는 사이클에서만
-  요약 전송.
-- 장 시작/마감 브리핑은 조용 모드와 **무관하게** 매일 평일 09:00 / 15:35 에 전송.
-- 차단·에러·거래·청산 알림은 조용 모드 여부와 관계없이 항상 전송.
-
-## 런타임 상태 파일 (`data/` 볼륨)
-
-컨테이너 재시작·이미지 업데이트에도 유지되는 영속 상태 파일들. 전부 `data/` 안에 있어
-`docker-compose.yml` 볼륨 매핑(`./data:/app/data`)으로 자동 보존.
-
-| 파일 | 용도 | 생성/수정 주체 |
-|---|---|---|
-| `trading.sqlite` | 시그널·주문·에러·포지션 기록 | `store/db.py`, `store/repo.py` |
-| `KILL_SWITCH` | 긴급 정지 플래그 (파일 존재 시 구매 차단, `trigger: auto` 줄 포함 시 자동 해제 대상) | `risk/kill_switch.py`, `/stop` / `/resume`, `error_spike_watchdog_job` |
-| `KILL_SWITCH_AUTO_RELEASE.log` | 자동 해제 이력 타임스탬프 (플래핑 방지 판정용) | `risk/kill_switch.py` |
-| `AUTO_UPDATE_DISABLED` | 자동 업데이트 꺼짐 플래그 | `bot/update_manager.py`, `/update disable` |
-| `QUIET_MODE` | 조용 모드 플래그 (10분 사이클 hold-only 요약 끔) | `bot/quiet_mode.py`, `/quiet on` / `off` |
-| `current_image_digest` | 기동 시 snapshot 한 GHCR digest (/update 비교용) | `bot/update_manager.py` |
-| `kis_mode_override` | paper/live 모드 런타임 오버라이드 | `bot/mode_switch.py`, `/mode` |
-| `credentials.env` | 자격증명 오버라이드 (`.env` 보다 우선) | `/setcreds`, `nano`, `credentials_watcher_job` |
-| `paper_account_issued` | 모의 계좌 사용 시작 시각 (90일 만료 카운트다운) | `bot/expiry.py`, `/reload`, `/setcreds paper` |
-| `universe.json` | 추적 종목 런타임 오버라이드 (`{code, name, sector?}`) | `/universe add`, `/universe remove`, 기동 시 섹터 백필 |
-| `backup/trading_YYYYMMDD.sqlite` | 일일 DB 스냅샷 (7일 롤링) | `store/backup.py` + `db_backup_job` |
-
-## 텔레그램 커맨드 (19개)
-
-**시작**
-- `/menu`, `/start` — 메인 허브 (자주 쓰는 동작을 버튼 하나로)
-
-**조회**
-- `/help`, `/status`, `/positions`, `/signals`, `/accuracy`, `/cost`, `/mode`, `/universe`, `/about`
-
-**조작**
-- `/stop`, `/resume` — 킬 스위치 토글
-- `/quiet` — 조용 모드 토글 (10분 hold-only 사이클 요약 끔). 거래/청산/차단/에러/브리핑은 그대로
-- `/sell` — 보유 종목 목록을 버튼으로 띄워 선택 (또는 `/sell CODE` 로 직접 지정)
-- `/positions` — 목록 + 종목별 판매 버튼
-- `/cycle` — 사이클 1회 즉시 실행
-- `/mode` — 현재 모드 표시 + 전환 버튼 (또는 `/mode paper|live [confirm]` 로 직접 전환)
-- `/universe` — 목록
-- `/universe add CODE` — 종목 추가 (KIS 이름 조회 후 예/아니오 버튼)
-- `/universe remove` — 추적 종목 버튼 목록 → 선택 후 확인 (또는 `/universe remove CODE`)
-
-**업데이트**
-- `/update` — 현재/최신 버전 비교
-- `/update confirm` — 최신 버전으로 실제 업데이트 실행 (Watchtower)
-- `/update notes [버전]` — 지금 버전 또는 특정 버전의 릴리스 노트
-- `/update enable` / `disable` / `status` — 자동 업데이트 토글
-
-**자격증명**
-- `/setcreds paper KEY SECRET ACCOUNT` — 텔레그램 직접 교체 (원본 메시지 자동 삭제)
-- `/setcreds live KEY SECRET ACCOUNT confirm` — 실전 교체 (confirm 필수)
-- `/reload` — `data/credentials.env` 수동 재로드 (파일 없으면 `/setcreds` 안내)
-- `/restart` — 컨테이너 완전 재시작 (`SIGTERM` → Docker restart 정책)
-
-기동 시 `main.py` 가 `telegram.set_commands(TELEGRAM_BOT_COMMANDS)` 호출 → 텔레그램
-`/` 자동완성 메뉴에 표시됨.
-
-## 자격증명 관리 플로우 (3개월 모의 계좌 갱신)
-
-KIS 모의투자 계좌는 **90일 유효기간** 이 있다. 재신청 시 새 앱키·시크릿·계좌번호가
-발급되므로 정기적으로 교체 필요. 봇은 이걸 **Docker 재시작 없이** 처리한다.
-
-**자동 경고**
-- `bot/expiry.py` 가 `data/paper_account_issued` 파일에 저장된 시작 시각 + 90일 로
-  만료일 계산
-- 매일 08:00 KST 에 `paper_expiry_check_job` 이 체크
-- 7일 이내: ⏰ "모의 계좌 만료 임박" 경고 (KIS 포털 링크 포함)
-- 만료 후: 🚨 "모의 계좌 만료됨" + 경과일수 (사용자가 재신청할 때까지 매일)
-
-**재발급 후 적용 방법 (3가지, 사용자 선택)**
-
-**A. 텔레그램 `/setcreds` (가장 편함)**
-```
-/setcreds paper PSXXXxxx... longBase64String== 12345678
-```
-원본 메시지가 자동 삭제되어 시크릿이 채팅 기록에 남지 않는다.
-로그에는 args 가 `[REDACTED]` 로 기록된다.
-
-**B. 파일 편집 → 자동 감지 (5분 대기)**
-```bash
-nano /volume1/docker/trading/data/credentials.env
-# 새 값 저장 후 최대 5분 내 credentials_watcher_job 이 감지, 자동 재로드
-```
-
-**C. 파일 편집 → 즉시 `/reload`**
-```bash
-nano data/credentials.env
-# 저장 후 텔레그램: /reload
-```
-
-세 방법 모두 최종적으로 동일한 동작:
-1. `data/credentials.env` 병합 저장 (다른 모드 키는 보존)
-2. `load_credentials_override()` 로 `os.environ` 업데이트 (override=True)
-3. `build_trade_cfg(current_mode)` 로 새 `KisConfig` 생성
-4. `trading_lock` 안에서 `BotContext.kis` 원자적 교체
-5. 해당 모드 토큰 캐시 (`tokens/kis_token_{mode}.json`) 삭제
-6. paper 모드면 `expiry.mark_updated()` 호출 (90일 카운트다운 리셋)
-7. `runtime_state.credentials_last_mtime` 갱신 (watcher 중복 방지)
+신규 상태 파일을 추가할 때는 **반드시 `data/` 하위**로. `.env` 과 `data/credentials.env`
+는 `.gitignore` 대상, Docker 이미지 빌드 시 COPY 대상에서 제외.
 
 ## 핵심 디자인 결정 (되돌리지 말 것)
 
-- **시세 조회는 항상 실전 서버**
-  모의 서버(openapivts)의 국내주식 시세 API 는 불안정해 (500 에러 빈발). `config.py` 의
-  `kis_quote` 는 항상 `KIS_LIVE_*` 키로 초기화된다. 주문/잔고만 현재 모드 서버로.
+- **시세 조회는 항상 실전 서버.** 모의 서버(openapivts) 국내주식 시세 API 는 불안정
+  (500 랜덤). `config.py kis_quote` 는 항상 `KIS_LIVE_*` 키로 초기화. 주문/잔고만
+  현재 모드 서버. 이걸 되돌리면 모든 시세 조회가 불안정해짐.
 
-- **paper 가 기본값**
-  `.env.example`, `settings.yaml` 모두 `KIS_MODE=paper`. 실전 전환은 사용자가 명시적으로
-  `/mode live confirm` 또는 `.env` 수정 시에만. 테스트 코드에서도 paper 유지.
+- **paper 가 기본값.** `.env.example`, `settings.yaml`, 테스트 코드 전부 `KIS_MODE=paper`.
+  실전 전환은 사용자가 명시적으로 `/mode live confirm` 또는 `.env` 수정할 때만.
 
-- **Telegram 만으로 운영 가능**
-  SSH 접근 없이도 전 기능 조작 가능해야 함. kill switch 토글, 자동 업데이트 on/off,
-  수동 판매, 사이클 강제 실행, 상태 조회, **자격증명 교체, 모드 전환, 컨테이너 재시작**
-  모두 텔레그램 커맨드로.
+- **Telegram 만으로 운영 가능.** SSH 없이도 전 기능 조작 가능해야 함 (킬 스위치, 자동
+  업데이트, 수동 판매, 사이클 강제 실행, 자격증명 교체, 모드 전환, 컨테이너 재시작).
+  새 운영 기능 추가 시 반드시 텔레그램 커맨드로 노출.
 
-- **기계적 청산 우선**
-  손절/익절/트레일링은 LLM 이 아닌 고정 규칙. 속도/신뢰성/비용 모두 유리.
+- **기계적 청산 우선.** 손절/익절/트레일링은 LLM 이 아닌 고정 규칙. 속도/신뢰성/비용
+  모두 유리. LLM 은 **신규 진입 판단만**.
 
-- **사일런트 실패 방지 — 에러 급증 자동 회로차단기 + 자동 복구**
-  5분마다 최근 1시간 에러 카운트를 체크해 10건 초과 시 자동으로 킬스위치 활성화 +
-  긴급 텔레그램 알림. 이유: 토큰 만료/네트워크 장애/API 변경 같은 상황에서 봇이
-  hold-only 사이클처럼 조용히 실패 누적하는 걸 막기 위해.
+- **사일런트 실패 방지 — 에러 급증 자동 회로차단기 + 자동 복구.** 5분마다 최근 1시간
+  에러 10건 초과 시 킬스위치 자동 활성화. 자동 활성화된 킬스위치(`trigger: auto`)는
+  15분 경과 + 최근 30분 에러 0건일 때 자동 해제, 1시간 내 재활성화되면 플래핑으로
+  판정해 수동만 가능. **수동 킬스위치는 절대 자동 해제 안 함** (구조적 문제일 수 있음).
 
-  **자동 해제 정책** — 일시적 장애(모의 서버 500, 네트워크 일시 단절)로 걸린
-  킬스위치가 사용자 부재 중 하루 종일 못 풀려 기회를 통째로 날리는 상황을 방지.
-  - 자동 활성화된 킬스위치(`KILL_SWITCH` 파일에 `trigger: auto` 표시)만 자동 해제 대상
-  - 조건: 활성화 후 최소 15분 경과 + 최근 30분 에러 0건
-  - 해제 시 "✅ 자동 복구" 텔레그램 알림 전송 (조용 모드 무관)
-  - **플래핑 방지**: 자동 해제 이력을 `data/KILL_SWITCH_AUTO_RELEASE.log` 에 append.
-    해제 후 1시간 내 재활성화되면 "플래핑 감지" 경고 + 그땐 수동 해제만 가능
-  - 수동(`/stop`, `touch data/KILL_SWITCH`) 으로 걸린 킬스위치는 **절대 자동 해제 안 함**
-    (구조적 문제일 수 있으므로 사용자가 직접 판단하도록)
+- **submitted ≠ filled.** 시장가 주문도 상한가·거래정지·호가 부족으로 미체결 가능.
+  사이클 끝에 `fill_tracker.reconcile_pending_orders` 가 KIS inquire-daily-ccld 로
+  상태 업데이트 (filled/partial/cancelled). 미체결 매수는 자동 취소, 미체결 판매는
+  계속 대기 (손절/청산이라 강제 취소 안 함).
 
-  파라미터는 `main.py` 상수(`_AUTO_KILL_*`)로 하드코딩. 튜닝 필요 시 그 값을 수정.
+- **LLM 프롬프트 캐싱 (ephemeral).** `signals/llm.py` 의 system 프롬프트 + tool 정의에
+  `cache_control` 태그. 연속 호출 시 입력 비용 최대 90% 절감. 최소 캐시 블록(1024 토큰)
+  미달 시 정상 과금으로 조용히 폴백.
 
-- **주문 체결 여부 추적 — submitted 는 '접수'이지 '체결'이 아님**
-  시장가 주문이라 대부분 즉시 체결되지만, 상한가·거래정지·호가 부족 등으로 미체결
-  가능. 사이클 마지막에 `fill_tracker.reconcile_pending_orders` 가 KIS
-  inquire-daily-ccld 를 호출해 submitted → filled / partial / cancelled 로 상태
-  업데이트. DB 에 남은 '유령 접수' 기록 방지.
+- **LLM side_hint 미전달.** prefilter 가 buy/sell 방향을 결정해도 LLM 에는 알리지 않음
+  (확증 편향 제거). 대신 prefilter side 와 LLM decision 교차검증해서 불일치 시 reject.
 
-- **LLM 프롬프트 캐싱 (ephemeral)**
-  `signals/llm.py` 에서 system 프롬프트 + tool 정의에 `cache_control` 태그. 연속
-  호출 시 캐시 히트로 입력 비용 최대 90% 절감. 최소 캐시 블록 (1024 토큰) 미달 시
-  Anthropic 이 조용히 정상 과금으로 폴백 — 에러 없음.
+- **`/quiet` 는 10분 사이클 hold-only 요약만 토글.** 거래/청산/차단/에러/브리핑은 quiet
+  여부와 무관하게 항상 전송. 장 시작/마감 브리핑도 quiet 와 독립이라 매일 평일
+  09:00/15:35 무조건 전송.
 
-- **`/quiet` 는 10분 사이클 요약 토글, 브리핑은 독립**
-  기본(`/quiet off`)은 10분 사이클마다 hold 여도 요약을 보낸다 (봇 살아있음 확인 +
-  관망 근거 추적). 사용자가 스팸으로 느끼면 `/quiet on` 으로 hold-only 요약만 끔 —
-  거래·청산·차단·에러는 여전히 전송. 장 시작/마감 브리핑은 quiet 와 독립이라 매일
-  평일 09:00/15:35 에 무조건 전송된다.
+- **`:latest` 이미지 태그는 tag push 에서만 갱신.** main push 는 `:main`, `:sha-xxx`
+  만 받고 `:latest` 미갱신. Watchtower 가 `:latest` 감시하므로 **의미 있는 릴리스(태그)만
+  NAS 자동 배포**됨. 작은 수정은 main 에 쌓고 태그는 묶어서.
 
-- **`:latest` 이미지 태그는 tag push 에서만 갱신**
-  main push 로 빌드된 이미지는 `:main` 과 `:sha-xxx` 만 받고 `:latest` 는 받지 않음.
-  Watchtower 가 `:latest` 를 감시하므로 **의미 있는 릴리스(태그)만 NAS 에 자동 배포**됨.
-  작은 수정은 main 에만 쌓고 태그는 묶어서.
-
-- **런타임 상태 파일은 전부 `data/` 안**
-  `KILL_SWITCH`, `credentials.env`, `kis_mode_override`, `paper_account_issued`,
-  `current_image_digest`, `AUTO_UPDATE_DISABLED` 전부. 이유: Docker 볼륨 매핑으로 영속화
-  + 권한 분리 + 보안 (이미지에 포함 안 됨).
-
-- **시크릿은 절대 로그/repo/이미지에 남기지 말 것**
-  - `.env`, `data/credentials.env` 는 `.gitignore` 대상
-  - poller 는 `/setcreds` 커맨드 args 를 `[REDACTED]` 로 마스킹
-  - `/setcreds` 응답은 `delete_original=True` 플래그로 원본 메시지 자동 삭제
-  - Docker 이미지는 `trading_bot/`, `config/`, `scripts/` 만 COPY (`.env` 불포함)
-
-## 언어·스타일 규칙
-
-- **사용자 대면 텍스트는 한국어 쉬운 말**
-  텔레그램 메시지, 에러 메시지, 로그는 전부 한국어. 토스 증권 스타일:
-  - 매수/매도 → 구매/판매
-  - 포지션 → 갖고 있는 주식
-  - 평단가 → 평균 구매가
-  - 예수금 → 쓸 수 있는 현금
-  - confidence 0.75 → 확신도 75%
-  - 금액에 천 단위 콤마 (`fmt_won` 헬퍼)
-
-- **코드 주석/로그도 한국어**
-  기술 용어는 원어 유지 (RSI, OHLCV, hashkey, Watchtower, tool_use 등).
-
-- **커밋 메시지**
-  한국어 또는 한영 혼용. 제목 50자 이내. 본문에 "왜" 중심 설명. 마지막 줄에
-  `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`.
-
-## 릴리스 정책
-
-- **모든 커밋을 태그하지 말 것**. 사소한 수정(오타, 로그 조정, 문구 다듬기, 주석
-  개선 등)은 main 에 푸시만 하고 태그 생략. 사용자가 "축적 후 릴리스" 선호.
-- **의미 있는 변경이 누적됐을 때만 태그**:
-  - 새 Stage 완성 / 주요 기능 추가
-  - 새 텔레그램 커맨드
-  - 사용자 워크플로우 변화
-  - 버그 픽스 여러 개 묶어서
-- **semver**: MAJOR.MINOR.PATCH
-  - MAJOR: 호환성 깨지는 변경 (아직 없음)
-  - MINOR: 새 기능 (Stage 추가 등)
-  - PATCH: 버그 픽스, UX 개선, 작은 조정
-- **태그 형식**: `v0.2.8`, `v0.3.0` 등
-
-태그 찍는 법:
-```bash
-git tag -a v0.x.y -m "v0.x.y — 변경 요약"
-git push origin v0.x.y
-```
-
-GitHub Actions 가 자동으로:
-1. Docker 이미지 빌드 → GHCR 업로드 (`:latest`, `:0.x.y`, `:0.x`, `:sha-xxx`)
-2. GitHub Release 페이지 생성 + changelog 자동 첨부
-3. 익일 02:00 KST Watchtower 자동 반영 (사용자 수동 액션 없음)
+- **시크릿은 절대 로그/repo/이미지에 남기지 말 것.** `.env`, `data/credentials.env`
+  는 `.gitignore`. poller 는 `/setcreds` args 를 `[REDACTED]` 마스킹. `/setcreds`
+  응답은 `delete_original=True` 로 원본 메시지 자동 삭제.
 
 ## KIS API 알려진 버그/주의 (절대 잊지 말 것)
 
+코드만 봐선 모르는 운영 지식. 이걸 놓치면 디버깅이 몇 시간 이상 걸린다.
+
 1. **"초당 거래건수를 초과" 에러가 HTTP 500 + JSON 바디로 반환됨** (문서와 다름).
-   `resp.raise_for_status()` 를 바디 확인 전에 호출하면 원인을 놓친다.
-   → 바디 먼저 파싱하고 `msg1` 에서 "초당" 문자열 판정 → 0.5초 백오프 재시도.
+   `resp.raise_for_status()` 를 바디 확인 전에 호출하면 원인을 놓친다. 바디 먼저
+   파싱하고 `msg1` 에서 "초당" 문자열 판정 → 0.5초 백오프 재시도.
 
-2. **모의 서버 시세 API 불안정**
-   같은 종목에도 500 랜덤 발생. 해결: 시세는 항상 실전 서버 + 실전 키 사용
-   (`paper` 모드에서도). 이걸 되돌리면 모든 시세 조회가 불안정해짐.
+2. **모의 서버 시세 API 불안정.** 같은 종목에도 500 랜덤 발생. 시세는 항상 실전 서버
+   + 실전 키 사용 (paper 모드에서도).
 
-3. **모의 서버 장외 시간 주문 거부**
-   `msg_cd=40580000 msg1=모의투자 장종료 입니다`. 스케줄러가 평일 09:00~15:30 로
-   제한돼 있어 자동 운용 중엔 문제 없음. `--once --force` 수동 테스트 시만 주의.
+3. **모의 서버 장외 시간 주문 거부.** `msg_cd=40580000 msg1=모의투자 장종료 입니다`.
+   스케줄러가 평일 09:00~15:30 로 제한돼 있어 자동 운용 중엔 문제없음. `--once --force`
+   수동 테스트 시만 주의.
 
-4. **KIS 유량 정책 및 throttle 설정** (v0.5.0)
-   - **공식 한도**: 실전 20 req/s · 모의 2 req/s
-   - **신규 API 발급 후 3일**: 실전도 3 req/s 로 임시 제한
-   - **기본 throttle** (settings.yaml `rate_limit`):
-     - 실전: `live_min_interval_sec: 0.055` (~18 req/s, 한도 90%)
-     - 모의: `paper_min_interval_sec: 0.55` (~1.8 req/s, 한도 90%)
-   - **신규 키 3일간 임시 조정**: `live_min_interval_sec` 를 `0.34` (~2.9 req/s)
-     로 고친 뒤 3일 경과 후 다시 `0.055` 로 복원.
-   - `KisClient._throttle()` 가 서버별 최소 간격을 강제 (멀티스레드 lock 포함).
-     hashkey 발급 호출도 동일 throttle 대상.
-   - 이 간격보다 빠르게 호출하면 "초당 거래건수를 초과" 가 500 + JSON 바디로
-     내려옴 (아래 알려진 버그 1번 참조).
+4. **KIS 유량 정책 (v0.5.0 기준).** 실전 20 req/s · 모의 2 req/s. **신규 API 발급 후
+   3일**은 실전도 3 req/s 로 임시 제한. `settings.yaml rate_limit`:
+   - 실전: `live_min_interval_sec: 0.055` (~18 req/s, 한도 90%)
+   - 모의: `paper_min_interval_sec: 0.55` (~1.8 req/s, 한도 90%)
+   - **신규 키 3일간 임시**: `live_min_interval_sec` 를 `0.34` (~2.9 req/s) 로 수정
+     했다가 3일 경과 후 `0.055` 로 복원.
+   `KisClient._throttle()` 이 서버별 최소 간격 강제 (multithread lock). hashkey 발급도
+   같은 throttle 대상.
 
-5. **주문 hashkey 필수**
-   POST `/uapi/domestic-stock/v1/trading/order-cash` 는 `hashkey` 헤더 필수.
-   `/uapi/hashkey` 엔드포인트로 주문 body 의 hash 선발급. hashkey 호출 자체도
-   throttle 대상 (이것도 rate limit 걸릴 수 있음).
+5. **주문 hashkey 필수.** `/uapi/domestic-stock/v1/trading/order-cash` POST 는 `hashkey`
+   헤더 필수. `/uapi/hashkey` 로 선발급. hashkey 호출 자체도 throttle 대상.
 
-6. **주문 재시도 정책**
-   rate limit ("초당" 포함 msg1) 만 재시도 허용. 그 외 비즈니스 에러(잔고 부족,
-   장종료, 상한가 도달 등) 는 **절대 재시도 금지** — 주문 중복 방지.
+6. **주문 재시도 정책.** rate limit ("초당" 포함 msg1) 만 재시도. 잔고 부족/장종료/
+   상한가 등 비즈니스 에러는 **절대 재시도 금지** (주문 중복 방지).
 
-7. **모의계좌 초기 잔고는 신청 시점마다 다름**
-   예전에는 1억원이었으나 최근 신청에서는 1천만원으로 확인됨 (2026-04). 유저에게
-   `dnca_tot_amt` 가 1억이 아니어도 놀라지 않도록 안내.
+7. **모의 계좌 초기 잔고는 신청 시점마다 다름.** 예전엔 1억원, 최근엔 1천만원 (2026-04).
+   `dnca_tot_amt` 가 1억이 아니어도 놀라지 말 것.
 
-8. **잔고 output2 의 `asst_icdc_erng_rt`** = 전일 대비 자산 증감률 %. 일일 손실
-   한도 체크에 그대로 활용.
+8. **잔고 output2 의 `asst_icdc_erng_rt`** = 전일 대비 자산 증감률 %. 일일 손실 한도
+   체크에 그대로 활용.
 
-9. **90일 모의 계좌 만료**
-   재신청 시 새 앱키/시크릿/계좌번호 전부 바뀜. 이걸 자동 감지할 수 없어서
-   `data/paper_account_issued` 파일로 카운트다운 관리. `/reload` 또는 `/setcreds paper`
-   시 리셋.
+9. **90일 모의 계좌 만료.** 재신청 시 앱키/시크릿/계좌번호 전부 바뀜. 자동 감지 불가.
+   `data/paper_account_issued` 로 카운트다운. `/reload` 또는 `/setcreds paper` 시 리셋.
+   `paper_expiry_check_job` 이 매일 08:00 체크, 7일 이내부터 경고.
 
-10. **토큰 발급 3개 동시 성공 가능**
-    KIS OAuth `/oauth2/tokenP` 는 동일 앱키로 이미 발급된 토큰이 있으면 새 토큰이
-    아니라 **같은 토큰** 을 돌려준다 (1일 유효). 여러 클라이언트(로컬 Mac, NAS)에서
-    동시에 호출해도 같은 토큰이 나와서 무해.
+10. **토큰 재사용.** KIS OAuth `/oauth2/tokenP` 는 동일 앱키에 유효 토큰이 있으면
+    **같은 토큰** 을 돌려줌 (1일 유효). 여러 클라이언트 동시 호출해도 무해.
 
-## 주요 파일 구조
+## 자주 하는 실수 (프로젝트 고유)
 
-```
-trading_bot/
-  main.py              엔트리포인트
-                         - setup_logging, load_settings, init_db
-                         - snapshot_current_digest (기동 시 GHCR 비교 기준)
-                         - expiry.ensure_issued_date (90일 카운트다운 초기화)
-                         - telegram.set_commands (커맨드 메뉴 등록)
-                         - TelegramPoller 스레드 시작
-                         - APScheduler 4개 크론 잡 등록
-                         - scheduler.start() (main thread block)
-  __init__.py          __version__ (BOT_VERSION env 우선, fallback 하드코딩)
-  config.py            .env + settings.yaml 통합 로딩
-                         - ROOT, _MODE_OVERRIDE_FILE, CREDENTIALS_OVERRIDE_FILE
-                         - KisConfig dataclass (mode, app_key/secret, account)
-                         - Settings dataclass (kis, kis_quote, telegram, llm, ...)
-                         - build_trade_cfg(mode) — public 헬퍼 (런타임 전환용)
-                         - load_credentials_override() — data/credentials.env
-                         - _read_mode_override() — data/kis_mode_override
-                         - load_settings() — 전체 로드 + override 적용
-  logging_setup.py     콘솔 + 파일 로거
+- **`docker compose restart` 로 `.env` 변경이 반영될 거라 기대.** `restart` 는 env_file
+  을 다시 읽지 않는다. `docker compose up -d --force-recreate trading-bot` 사용.
 
-  kis/
-    auth.py            토큰 발급/캐시/자동 갱신 (lock 포함, 만료 1시간 전 재발급)
-    client.py          REST 래퍼:
-                         get_price (FHKST01010100, live 서버)
-                         get_daily_ohlcv (FHKST03010100, live 서버)
-                         get_balance (VTTC8434R/TTTC8434R, 모드별)
-                         get_hashkey + place_market_order (VTTC0802U/TTTC0802U)
-                         normalize_holdings (정적 헬퍼)
-                         _throttle (서버별 최소 간격 + lock)
+- **마이그레이션 없이 DB 스키마 변경.** 기존 DB 호환을 위해 `store/db.py init_db` 에
+  `PRAGMA table_info` → `ALTER TABLE ADD COLUMN` 패턴으로 마이그레이션 코드 추가.
 
-  signals/
-    indicators.py      RSI (Wilder), volume_ratio, sma — 순수 Python
-    prefilter.py       룰베이스 후보 선정 (Candidate dataclass)
-    llm.py             Claude API + emit_decision tool_use
-                         SYSTEM_PROMPT: 쉬운 말로 reasoning 작성 지시
-                         프롬프트 캐싱 (system + tools ephemeral) → 입력 비용 절감
-    exit_strategy.py   check_exit (손절/익절/트레일링)
-                         sync_position_state, update_high_water_mark
-    cycle.py           run_cycle (전체 오케스트레이션)
-                         _run_exit_checks (청산 단계)
-                         _notify_summary (텔레그램 요약)
-                         마지막에 fill_tracker.reconcile_pending_orders 호출
-    fill_tracker.py    체결 상태 추적
-                         KIS inquire-daily-ccld 로 submitted → filled/partial/cancelled 업데이트
-    briefing.py        send_open_briefing (09:00), send_close_briefing (15:35)
-                         장 마감: pnl_daily 기록 + "왜 오늘 거래가 없었나" 사후 설명
-    heartbeat.py       (deprecated, briefing.py 로 대체됨 — 파일 없음)
+- **주문 에러에 retry 를 무턱대고 달기.** rate limit 만 재시도. 그 외는 금지.
 
-  risk/
-    manager.py         RiskManager.check (7단계 게이트, is_exit 파라미터)
-                         RiskDecision dataclass
-    kill_switch.py     파일 기반 (data/KILL_SWITCH)
-                         is_active, activate, deactivate
+- **Watchtower HTTP API 의 긴 응답 지연.** `trigger_update()` 는 이미지 pull + 컨테이너
+  교체 완료 후에만 응답 (30~60초). `httpx.ReadTimeout` 을 **성공 (처리 중)** 으로
+  해석해야 함. `update_manager.trigger_update` 에 이미 반영됨.
 
-  bot/
-    context.py         BotContext dataclass
-                         (settings, kis, risk, llm, trading_lock, started_at)
-    commands.py        모든 텔레그램 커맨드 핸들러
-                         TELEGRAM_BOT_COMMANDS (setMyCommands 용, 16개)
-                         포맷 헬퍼: fmt_won, fmt_pct, decision_ko,
-                                    mode_badge, confidence_pct, fmt_uptime
-                         _reply(delete_original=False) — 응답 dict 빌더
-    poller.py          TelegramPoller (long polling 백그라운드 스레드)
-                         chat_id 화이트리스트, 기동 시 backlog 스킵
-                         /setcreds args 는 로그 REDACTED
-                         delete_original=True 응답 시 사용자 메시지 자동 삭제
-    update_manager.py  자동 업데이트 토글 (data/AUTO_UPDATE_DISABLED)
-                         GHCR digest 조회 + snapshot (data/current_image_digest)
-                         GitHub Releases API
-                         trigger_update (Watchtower HTTP API, ReadTimeout=성공)
-    mode_switch.py     data/kis_mode_override 파일 read/write/clear
-    expiry.py          PAPER_EXPIRY_DAYS=90
-                         ensure_issued_date, mark_updated
-                         days_until_expiry, build_expiry_warning
-                         KIS_PORTAL_URL = apiportal.koreainvestment.com/intro
-    runtime_state.py   모듈 간 공유 상태 (credentials_last_mtime)
+## 언어·스타일 규칙
 
-  store/
-    db.py              SQLite 스키마 + 자동 마이그레이션
-                         테이블: signals, orders, positions_snapshot,
-                                 pnl_daily, errors, position_state
-                         orders 테이블 name/reason 컬럼 ALTER 추가 (마이그레이션)
-                         signals.llm_cost_usd ALTER 추가 (마이그레이션)
-    repo.py            insert/query 헬퍼 함수들
-                         upsert_pnl_daily, get_recent_pnl_daily (주간 통계)
-                         get_today_signal_summary, get_today_risk_rejection_reasons
-                         get_pending_orders_today, update_order_status (체결 추적)
-                         count_recent_errors (회로차단기)
-    backup.py          SQLite Online Backup API (sqlite3.Connection.backup)
-                         data/backup/trading_YYYYMMDD.sqlite 롤링 7일 보관
+- **사용자 대면 텍스트는 한국어 쉬운 말** (토스 증권 스타일): 매수/매도 → 구매/판매,
+  포지션 → 갖고 있는 주식, 평단가 → 평균 구매가, 예수금 → 쓸 수 있는 현금, confidence
+  0.75 → 확신도 75%. 금액에 천 단위 콤마 (`fmt_won` 헬퍼).
 
-  utils/
-    calendar_kr.py     is_trading_day, is_market_open_now
-                         KRX 휴장일 YAML 로드
+- **코드 주석/로그도 한국어.** 기술 용어는 원어 유지 (RSI, OHLCV, hashkey, Watchtower,
+  tool_use 등).
 
-  notify/
-    telegram.py        sendMessage, getUpdates, answer_callback
-                         set_commands (setMyCommands)
-                         delete_message (시크릿 메시지 자동 삭제)
+- **커밋 메시지.** 한국어 또는 한영 혼용. 제목 50자 이내. 본문에 "왜" 중심 설명.
+  마지막 줄에 `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`.
 
-config/
-  settings.yaml            운용 파라미터 (universe, cycle_minutes, risk, llm,
-                                          prefilter, exit)
-  market_holidays.yaml     KRX 휴장일 (매년 갱신 필요)
+## 릴리스 정책
 
-scripts/
-  stage3_verify.py         주문 경로 E2E 검증 (risk + hashkey + place_market_order)
-  stage4_verify.py         텔레그램 커맨드 핸들러 단위 검증
-  stage6_verify.py         exit_strategy.check_exit 시나리오 검증 (8개 케이스)
-
-.github/workflows/
-  docker-publish.yml       main push + v* tag push → GHCR 빌드/푸시
-                             :latest 는 tag push 시에만 갱신 (중요!)
-                             BOT_VERSION build-arg 로 git tag 주입
-  release.yml              v* tag push → GitHub Release 자동 생성 + changelog
-```
+- **모든 커밋을 태그하지 말 것.** 사소한 수정(오타, 로그/문구/주석 조정)은 main push
+  만. 사용자가 "축적 후 릴리스" 선호.
+- **의미 있는 변경이 누적됐을 때만 태그**: 새 Stage / 새 텔레그램 커맨드 / 워크플로우
+  변화 / 버그 픽스 묶음.
+- **semver**: MAJOR (호환성 깨짐, 아직 없음) / MINOR (새 기능) / PATCH (버그·UX).
+- **태그 형식**: `v0.x.y`. `git tag -a v0.x.y -m "..." && git push origin v0.x.y`.
+  GitHub Actions 가 GHCR 빌드 + `:latest` 갱신 + Release 페이지 + changelog 자동 처리.
+  익일 02:00 KST Watchtower 가 NAS 자동 반영.
 
 ## 테스트 / 검증 워크플로우
 
-- **코드 수정 후**: `python3 -m compileall -q trading_bot/` (컴파일 체크 필수)
+- **코드 수정 후**: `python3 -m compileall -q trading_bot/` 필수
 - **변경한 커맨드/로직**: 관련 `scripts/stageN_verify.py` 재실행
 - **전체 사이클**: `python -m trading_bot.main --once --force`
 - **NAS 배포**: `git push` 후 의미 있는 변경이면 `git tag v0.x.y && git push --tags`
-
-## 자주 하는 실수 (회피)
-
-- **`:latest` 를 단순 pull 하면 자동 배포된다고 생각하기**
-  main push 는 `:latest` 를 갱신하지 않는다. 반드시 `git tag` 후 `git push --tags`.
-
-- **`docker compose restart` 로 .env 변경 반영이 될 거라 기대**
-  `restart` 는 env_file 을 **다시 읽지 않는다**. `.env` 변경 후엔 반드시
-  `docker compose up -d --force-recreate trading-bot` 사용.
-
-- **Python 3.9 f-string 에서 백슬래시 사용**
-  `f"{d[\"key\"]}"` 은 3.9 에서 SyntaxError. 로컬 venv 가 3.9 면 터진다.
-  → 변수로 분리하거나 `f"{d['key']}"` (작은따옴표 혼용).
-
-- **`cut -d= -f2` 로 base64 시크릿 파싱**
-  base64 패딩 `=` 이 있으면 `cut` 이 2번째 필드까지만 뽑아서 trailing `=` 을 버린다.
-  → `sed -n 's/^KEY=//p'` 또는 `awk` 로 prefix 만 제거.
-
-- **`.env` scp 전송 시 `-O` 옵션 누락**
-  맥북 OpenSSH 9+ 는 SFTP 프로토콜 기본이지만 Synology DSM 은 SFTP 서브시스템
-  꺼져있음. `scp -O -P <port> source dest` 사용. NAS SSH 접속 상태에서 직접
-  `nano` 로 편집하는 게 더 단순할 때도 있음.
-
-- **`scp -O` 를 NAS 셸에서 실행**
-  `-O` 는 **Mac 의 OpenSSH 9+** 플래그. NAS 에는 없으니 맥북 터미널에서 실행해야 함.
-
-- **Synology sudo 에 docker 경로 없음**
-  `sudo docker` 가 "command not found" 에러. `secure_path` 가 `/usr/local/bin` 을
-  포함 안 해서 발생. 해결: `sudo /usr/local/bin/docker ...` 절대 경로 사용.
-
-- **ssh 로 sudo 명령 실행 시 TTY 없음**
-  `sudo: a terminal is required`. 해결: `ssh -t` 플래그로 pseudo-TTY 할당.
-
-- **긴 URL 을 터미널에 붙여넣을 때 줄바꿈 됨**
-  `sudo curl -o file URL` 에서 URL 이 잘려 두 줄로 해석되는 경우 있음.
-  → 변수로 쪼개기: `URL=...; sudo curl -o file "$URL"`
-
-- **마이그레이션 없이 DB 스키마 변경**
-  기존 DB 와 호환되려면 `store/db.py` 의 `init_db` 에 `ALTER TABLE ADD COLUMN IF NOT EXISTS`
-  패턴 (또는 `PRAGMA table_info` 로 컬럼 존재 확인 후 ALTER) 으로 마이그레이션 코드 추가.
-
-- **주문 에러에 retry 를 무턱대고 달기**
-  rate limit 만 재시도. 잔고 부족/장종료/상한가 등은 절대 재시도 금지.
-
-- **Watchtower HTTP API 의 긴 응답 지연**
-  `trigger_update()` 는 Watchtower 가 이미지 pull + 컨테이너 교체 전부 완료 후에만
-  응답. 이게 30~60초 걸릴 수 있으니 `httpx.ReadTimeout` 을 에러 아닌 **성공 (처리 중)**
-  으로 해석해야 함. `update_manager.trigger_update` 에 이미 반영됨.
-
-## 버전 히스토리 요약
-
-| 버전 | 주요 내용 |
-|---|---|
-| v0.1.0 | Stage 1~5 완성 (골격, 시그널, 주문, 텔레그램 양방향, NAS 배포) |
-| v0.1.1 | 토스 스타일 UI 전면 교체 |
-| v0.2.0 | Stage 6 자동 청산 (손절/익절/트레일링) |
-| v0.2.1 | 초보자 온보딩, /about, 버전 인젝션 |
-| v0.2.2 | Watchtower 내부 cron 통합 |
-| v0.2.3 | /update 커맨드 + Watchtower HTTP API 전환 |
-| v0.2.4 | README TOC, 중복 제거, GPL v3 라이선스 |
-| v0.2.5 | /update 의 digest 비교 "이미 최신" 응답 |
-| v0.2.6 | Watchtower ReadTimeout 을 성공으로 처리 |
-| v0.2.7 | /update 2단계 확인 플로우, :latest 는 tag push 전용 |
-| v0.2.8 | **런타임 제어 대폭 강화**: /mode, /reload, /restart, /setcreds, 만료 자동 알림, credentials 자동 감시 |
-| v0.3.0 | **알림 정책 개편**: /quiet 토글(hold-only 사이클 요약 on/off), 장 시작/마감 브리핑 2회 |
-| v0.3.1 | /quiet 의미 반전 — 기본은 10분 요약 전송, `/quiet on` 일 때만 hold 스킵 (브리핑은 항상 유지) |
-| v0.4.0 | **신뢰성/관찰성 대폭 강화**: 주문 체결 추적, 에러 급증 회로차단기, pnl_daily 활성화, /signals 차단 통계, 장 마감 사후 설명, SQLite 자동 백업, 휴장일 주간 리마인더, LLM 프롬프트 캐싱, /universe 현재가 표시, 종목당 비중 15→32% |
-| v0.5.0 | **거래 판단 로직 개편 + 신뢰성/관찰성 확장**: 〈판단 로직〉 (1) 분산 강화 — 동시 보유 3→5, 종목당 32→19.5% (2) 추세 필터 — `현재가 > SMA20` 조건 추가로 떨어지는 칼날 차단 (3) ATR 동적 손절 — 변동성 큰 종목 자동 넓은 손절 (4) 장 시작/마감 신규 매수 차단 (09:00~09:10, 15:20~15:30) (5) LLM side_hint 제거 + prefilter↔LLM 교차검증 (확증 편향 제거) (6) 유니버스 셔플 (종목 순서 공정성) 〈신뢰성/관찰성〉 (7) 섹터 분산 게이트 — universe 에 업종(KIS `bstp_kor_isnm`) 자동 백필 + `max_per_sector: 2` 리스크 게이트 (8) 사후 정확도 트래킹 — 5 거래일 경과한 buy/sell signal 의 forward return 계산 + `/accuracy` 커맨드 (confidence bucket 별 적중률 + DIRECTION_CONFLICT/LLM_HOLD 태그 집계) (9) 체결 확인 강화 — 사이클 끝에 30초 일괄 대기 후 KIS 체결 조회, 미체결 매수 자동 취소(`cancel_order`), 미체결 판매 계속 대기, 사이클 요약에 체결 섹션 표시 (10) KIS throttle 개선 — 실전 0.12s→0.055s (8→18 req/s, 한도 20 의 90%), `settings.yaml rate_limit` 로 설정 가능 (신규 키 3일 제한 시 임시 조정용) |
 
 ## 개발 로드맵 (선택)
 
 - Stage 7: 웹 대시보드 (FastAPI + 차트)
 - Stage 8: Lean 엔진 백테스트 통합, 전략 튜닝
-- 추가 아이디어: 뉴스 헤드라인 감성 분석, 펀더멘털 데이터 연동, 멀티 종목 가중치
-  최적화, 실시간 웹소켓 시세 (현재는 REST 폴링)
+- Stage 9: **뉴스 데이터 연동** (헤드라인 감성 분석)
+- Stage 10: **펀더멘털 데이터 연동** (재무지표 리스크 게이트)
+- 기타: 멀티 종목 가중치 최적화, 실시간 웹소켓 시세 (현재 REST 폴링)
+
+### Stage 9 — 뉴스 데이터 연동 (계획)
+
+**목표**: 종목별 최신 헤드라인을 LLM 판단 입력에 포함. 급등/급락 뉴스 직후 반대
+방향 진입 차단, 재료 없는 기술적 반등/하락 필터링.
+
+**데이터 소스**: 네이버 금융 뉴스 크롤링 (`finance.naver.com/item/news.naver?code=...`)
+1순위, KIS 국내뉴스 API 있으면 2순위. 해외 API (NewsAPI, Finnhub) 는 한국 커버리지
+약해서 제외.
+
+**아키텍처**
+- 새 모듈 `signals/news.py`: `fetch_news(code, limit=5, max_age_hours=24)` → 24h TTL 캐시
+- 새 테이블 `news_cache` (중복 방지 + 과거 뉴스-가격 상관 분석용)
+- `signals/llm.py` SYSTEM_PROMPT 에 `news: [{title, hours_ago}]` 블록 추가
+- `signals/cycle.py` prefilter 통과 후 LLM 호출 전 `fetch_news` 호출
+- 디버깅용 `/news CODE` 텔레그램 커맨드
+
+**원칙**: 보조 입력 — 연동 실패 시 기존 로직대로 진행. 크롤링 차단 리스크는
+robots.txt 준수 + User-Agent 설정으로 완화. 한국어 감성 분석은 별도 모델 대신
+LLM 원문 전달 (더 정확).
+
+### Stage 10 — 펀더멘털 데이터 연동 (계획)
+
+**목표**: 재무지표 기반 리스크 게이트. 기술적 시그널이 떠도 PER/PBR 비정상, 부채비율
+과도한 종목은 구조적으로 차단. 가치 + 모멘텀 하이브리드.
+
+**데이터 소스**: KIS 재무비율 / 대차대조표 / 손익계산서 API (1순위, 인증 공유).
+DART Open API (2순위, 원본 공시 XML). Yahoo/네이버 크롤링 제외.
+
+**아키텍처**
+- 새 모듈 `signals/fundamentals.py`: `fetch_fundamentals(code)` → PER/PBR/ROE/부채비율/EPS
+  성장/배당수익률
+- 새 테이블 `fundamentals_cache` + 주 1회 갱신 (분기 발표 주기 고려)
+- 새 크론 잡 `fundamentals_refresh_job`: 매주 일요일 03:00 KST 유니버스 전체 갱신
+  (KIS throttle 고려해 장외 시간 배치)
+- `risk/manager.py` 에 9단계 게이트 추가 (섹터 게이트 다음):
+  - `settings.yaml fundamentals`: `max_per`, `max_pbr`, `max_debt_ratio`, `min_roe`
+  - **임계값 위반 시 매수만 차단, 매도는 허용** (이미 보유한 부실 종목은 빠져나와야 함)
+  - **데이터 없음(캐시 미스) → 차단하지 않음** (연동 장애로 매수 막히는 상황 방지)
+- `signals/llm.py` 입력에 펀더멘털 블록 추가
+- 디버깅용 `/funda CODE` 텔레그램 커맨드
+
+**원칙**: 성장주 배제 위험 완화 위해 `max_per` 넉넉하게 기본값. 가치 함정은 기존
+추세 필터 (`현재가 > SMA20`, v0.5.0) 로 커버.
+
+### Stage 9, 10 공통 원칙
+
+- **보조 입력 원칙** — 연동 실패/데이터 없음 시 사이클이 멈추면 안 됨. fallback 은
+  "해당 입력 없이 기존 로직대로 진행".
+- **설정 기반 활성화** — `settings.yaml news.enabled`, `fundamentals.enabled` 기본 `false`
+  로 시작, 로컬 검증 후 활성화.
+- **사후 검증 필수** — 도입 후 최소 2주간 `/accuracy` 로 전/후 적중률 비교. 개선 없으면
+  플래그 끄고 롤백.

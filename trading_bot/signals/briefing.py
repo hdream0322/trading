@@ -45,15 +45,19 @@ def send_open_briefing(settings: Settings, kis: KisClient) -> None:
 
     if holdings:
         lines.append("")
-        lines.append("*갖고 있는 주식*")
+        lines.append(f"*갖고 있는 주식 {len(holdings)}개*")
         for code, pos in list(holdings.items())[:10]:
             name = pos.get("name", "")
             qty = int(pos.get("qty", 0))
             cur_price = int(pos.get("cur_price", 0))
             pnl_pct = pos.get("evlu_pfls_rt")
-            lines.append(
-                f"• {name} ({code}) {qty}주 @ {cur_price:,}원 · {fmt_pct(pnl_pct)}"
-            )
+            pnl_emoji = "🟢" if (pnl_pct is not None and float(pnl_pct) >= 0) else "🔴"
+            lines.append("")
+            lines.append(f"{pnl_emoji} *{name}* (`{code}`)")
+            lines.append(f"   {qty}주 · 지금 {cur_price:,}원 · {fmt_pct(pnl_pct)}")
+        if len(holdings) > 10:
+            lines.append("")
+            lines.append(f"_…외 {len(holdings) - 10}개 (전체는 /positions)_")
 
     telegram.send(settings.telegram, "\n".join(lines))
 
