@@ -26,6 +26,7 @@ from trading_bot.bot.keyboards import (
     _sell_confirm_keyboard,
     _sell_picker_keyboard,
     cycle_summary_keyboard,
+    kill_toggle_keyboard,
 )
 from trading_bot.kis.client import KisClient
 from trading_bot.risk import kill_switch
@@ -299,21 +300,24 @@ def cmd_accuracy(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 def cmd_stop(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     if kill_switch.is_active():
-        return _reply("🛑 긴급 정지가 이미 켜져있습니다")
+        return _reply("🛑 긴급 정지가 이미 켜져있습니다", reply_markup=kill_toggle_keyboard(True))
     kill_switch.activate(reason="telegram /stop command")
     return _reply(
         "🛑 *긴급 정지 켜짐*\n"
         "새로 구매는 막힙니다.\n"
-        "이미 갖고 있는 주식은 필요 시 자동 판매가 계속됩니다 (손절/청산용).\n\n"
-        "`/resume` 으로 다시 풀 수 있습니다."
+        "이미 갖고 있는 주식은 필요 시 자동 판매가 계속됩니다 (손절/청산용).",
+        reply_markup=kill_toggle_keyboard(True),
     )
 
 
 def cmd_resume(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     if not kill_switch.is_active():
-        return _reply("✅ 긴급 정지는 이미 꺼져있습니다")
+        return _reply("✅ 긴급 정지는 이미 꺼져있습니다", reply_markup=kill_toggle_keyboard(False))
     kill_switch.deactivate()
-    return _reply("✅ *긴급 정지 풀림*\n다음 점검부터 새로 구매가 가능합니다.")
+    return _reply(
+        "✅ *긴급 정지 풀림*\n다음 점검부터 새로 구매가 가능합니다.",
+        reply_markup=kill_toggle_keyboard(False),
+    )
 
 
 def cmd_quiet(ctx: BotContext, args: list[str]) -> dict[str, Any]:

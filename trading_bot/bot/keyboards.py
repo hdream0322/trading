@@ -145,6 +145,15 @@ def quiet_toggle_keyboard(active: bool) -> dict[str, Any]:
     return {"inline_keyboard": [[btn]]}
 
 
+def kill_toggle_keyboard(active: bool) -> dict[str, Any]:
+    """/stop · /resume 응답 하단 상호 토글 버튼."""
+    if active:
+        btn = {"text": "✅ 긴급 정지 풀기", "callback_data": "resume"}
+    else:
+        btn = {"text": "🛑 긴급 정지", "callback_data": "kill"}
+    return {"inline_keyboard": [[btn]]}
+
+
 def funda_toggle_keyboard(active: bool) -> dict[str, Any]:
     """/funda (인자 없음) 응답 하단 토글 버튼."""
     if active:
