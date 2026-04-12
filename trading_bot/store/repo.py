@@ -292,6 +292,17 @@ def upsert_pnl_daily(
         )
 
 
+def monthly_llm_cost_usd() -> float:
+    """이번 달 누적 LLM 비용."""
+    month_prefix = datetime.now().strftime("%Y-%m")
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT COALESCE(SUM(llm_cost_usd), 0) FROM signals WHERE substr(ts, 1, 7) = ?",
+            (month_prefix,),
+        )
+        return float(cur.fetchone()[0])
+
+
 def get_recent_pnl_daily(days: int = 7) -> list[dict[str, Any]]:
     """최근 N일 pnl_daily 레코드. 주간/월간 통계 조회용."""
     with _conn() as conn:

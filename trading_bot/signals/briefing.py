@@ -31,6 +31,10 @@ def send_open_briefing(settings: Settings, kis: KisClient) -> None:
         )
         return
 
+    # 전일 실적 조회
+    recent_pnl = repo.get_recent_pnl_daily(days=2)
+    yesterday_pnl = recent_pnl[0] if recent_pnl else None
+
     lines = [
         f"🌅 *장 시작 브리핑* {badge} — {datetime.now():%Y-%m-%d %H:%M}",
         f"총 자산 {fmt_won(balance_summary.get('tot_evlu_amt'))} · "
@@ -38,6 +42,17 @@ def send_open_briefing(settings: Settings, kis: KisClient) -> None:
         f"보유 {len(holdings)}종목 / 추적 {len(settings.universe)}종목 / "
         f"{settings.cycle_minutes}분마다 점검",
     ]
+
+    # 전일 실적 한 줄 요약
+    if yesterday_pnl and yesterday_pnl.get("ending_equity"):
+        y_trades = yesterday_pnl.get("trade_count", 0)
+        y_unreal = yesterday_pnl.get("unrealized_pnl")
+        y_line = f"어제({yesterday_pnl['date']}) 거래 {y_trades}건"
+        if y_unreal is not None:
+            sign = "+" if y_unreal >= 0 else ""
+            y_line += f" · 평가손익 {sign}{int(y_unreal):,}원"
+        lines.append(y_line)
+
     if kill_switch.is_active():
         lines.append("🛑 긴급 정지 상태 — 새 구매 차단 중 (자동 판매는 동작)")
     else:
@@ -83,8 +98,10 @@ def send_close_briefing(settings: Settings, kis: KisClient) -> None:
 
     orders = repo.get_today_orders()
     daily_cost = repo.today_llm_cost_usd()
+    monthly_cost = repo.monthly_llm_cost_usd()
     signal_summary = repo.get_today_signal_summary()
     risk_reasons = repo.get_today_risk_rejection_reasons()
+    recent_pnl = repo.get_recent_pnl_daily(days=5)
 
     submitted = [o for o in orders if o.get("status") == "submitted"]
     rejected = [o for o in orders if o.get("status") == "rejected"]
@@ -114,8 +131,23 @@ def send_close_briefing(settings: Settings, kis: KisClient) -> None:
         f"어제 대비 {fmt_pct(balance_summary.get('asst_icdc_erng_rt'))}",
         f"오늘 주문 접수 {len(submitted)}건 · 안전장치 차단 {len(rejected)}건 · "
         f"에러 {len(errored)}건",
-        f"오늘 AI 비용 ${daily_cost:.4f}",
+        f"오늘 AI 비용 ${daily_cost:.4f} · 이번 달 ${monthly_cost:.4f}",
     ]
+
+    # 주간 수익률 (최근 5거래일 ending_equity 변동)
+    if len(recent_pnl) >= 2:
+        oldest = recent_pnl[-1]
+        newest = recent_pnl[0]
+        oldest_eq = oldest.get("ending_equity")
+        newest_eq = newest.get("ending_equity")
+        if oldest_eq and newest_eq and oldest_eq > 0:
+            week_return = (newest_eq - oldest_eq) / oldest_eq * 100
+            week_trades = sum(p.get("trade_count", 0) for p in recent_pnl)
+            sign = "+" if week_return >= 0 else ""
+            lines.append(
+                f"최근 {len(recent_pnl)}거래일 수익률 {sign}{week_return:.2f}% · "
+                f"거래 {week_trades}건"
+            )
 
     if submitted:
         lines.append("")
