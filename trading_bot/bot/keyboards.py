@@ -145,6 +145,15 @@ def quiet_toggle_keyboard(active: bool) -> dict[str, Any]:
     return {"inline_keyboard": [[btn]]}
 
 
+def funda_toggle_keyboard(active: bool) -> dict[str, Any]:
+    """/funda (인자 없음) 응답 하단 토글 버튼."""
+    if active:
+        btn = {"text": "📊 재무사항 고려하지 않음", "callback_data": "funda_off"}
+    else:
+        btn = {"text": "📊 재무사항 고려", "callback_data": "funda_on"}
+    return {"inline_keyboard": [[btn]]}
+
+
 def update_auto_toggle_keyboard(enabled: bool) -> dict[str, Any]:
     """/update status 응답 하단 자동 업데이트 토글."""
     if enabled:

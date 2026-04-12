@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_bot.bot.context import BotContext
-from trading_bot.bot.keyboards import _reply
+from trading_bot.bot.keyboards import _reply, funda_toggle_keyboard
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +58,8 @@ def cmd_funda(ctx: BotContext, args: list[str]) -> dict[str, Any]:
             f"사용법:\n"
             f"`/funda 005930` — 종목 재무지표 조회\n"
             f"`/funda enable` — 게이트 켜기\n"
-            f"`/funda disable` — 게이트 끄기"
+            f"`/funda disable` — 게이트 끄기",
+            reply_markup=funda_toggle_keyboard(enabled),
         )
 
     sub = args[0].strip().lower()

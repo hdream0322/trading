@@ -179,6 +179,10 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         return cmd_quiet(ctx, ["on"])
     if data == "quiet_off":
         return cmd_quiet(ctx, ["off"])
+    if data == "funda_on":
+        return cmd_funda(ctx, ["enable"])
+    if data == "funda_off":
+        return cmd_funda(ctx, ["disable"])
     if data == "restart_confirm":
         return cmd_restart(ctx, ["confirm"])
     return _reply(f"모르는 버튼: `{data}`")
