@@ -187,7 +187,7 @@ PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
 - **semver**: MAJOR (호환성 깨짐, 아직 없음) / MINOR (새 기능) / PATCH (버그·UX).
 - **태그 형식**: `v0.x.y`. `git tag -a v0.x.y -m "..." && git push origin v0.x.y`.
   GitHub Actions 가 GHCR 빌드 + `:latest` 갱신 + Release 페이지 + changelog 자동 처리.
-  익일 02:00 KST Watchtower 가 NAS 자동 반영.
+  익일 08:30 KST Watchtower 가 NAS 자동 반영.
 
 ## 테스트 / 검증 워크플로우
 

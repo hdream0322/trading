@@ -27,9 +27,9 @@ services:
   # Watchtower 는 이미지 pull + 컨테이너 교체 실행만 담당한다. 스케줄링과
   # enable/disable 토글은 trading-bot 내부에서 관리.
   #
-  #   - 매일 02:00 KST 에 trading-bot 의 APScheduler 가 HTTP API 호출
+  #   - 매일 08:30 KST 에 trading-bot 의 APScheduler 가 HTTP API 호출
   #   - 사용자가 /update 명령으로 언제든 수동 호출 가능
-  #   - /update disable 로 자동 업데이트 끄면 02:00 스케줄 스킵 (수동은 여전히 가능)
+  #   - /update disable 로 자동 업데이트 끄면 08:30 스케줄 스킵 (수동은 여전히 가능)
   #
   # 네트워크: compose 기본 네트워크에서 trading-bot 이 `http://watchtower:8080`
   # 으로 접근. 포트는 외부에 공개되지 않음 (expose 는 compose 내부망 전용).

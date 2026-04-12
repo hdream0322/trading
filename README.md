@@ -277,7 +277,7 @@ LOG_LEVEL=INFO
 
 배포는 **GitHub Container Registry(GHCR)** 기반입니다. `v*` 태그를 푸시하면 GitHub Actions
 가 자동으로 `ghcr.io/hdream0322/trading:latest` 로 이미지를 올리고, NAS 의 **Watchtower** 가
-매일 02:00 KST 에 감지해 자동 배포합니다. 수동 SSH 없이 운용 가능합니다.
+매일 08:30 KST 에 감지해 자동 배포합니다. 수동 SSH 없이 운용 가능합니다.
 
 > ℹ️ 본 저장소와 GHCR 패키지는 public 입니다. 별도 인증 없이 `docker pull` 가능합니다.
 
@@ -374,7 +374,7 @@ sudo docker compose logs --tail 50 trading-bot
 
 **방법 A — 🤖 자동 업데이트 (Watchtower, 기본)**
 
-`docker-compose.yml` 의 Watchtower 가 매일 **02:00 KST** 에 GHCR 에서 새 이미지를 감지하고
+`docker-compose.yml` 의 Watchtower 가 매일 **08:30 KST** 에 GHCR 에서 새 이미지를 감지하고
 자동 pull → 컨테이너 교체. 대상은 `com.centurylinklabs.watchtower.enable=true` label 이
 붙은 `trading-bot` 컨테이너만.
 
@@ -383,7 +383,7 @@ git push origin v0.x.y
   ↓
 GitHub Actions 1~3분 내 이미지 빌드 → GHCR :latest 업데이트
   ↓
-익일 02:00 KST, NAS Watchtower 감지
+익일 08:30 KST, NAS Watchtower 감지
   ↓
 SIGTERM → Python 깔끔하게 종료 → 새 이미지 pull → 새 컨테이너
   ↓
@@ -412,7 +412,7 @@ cd /volume1/docker/trading && sudo docker compose pull && sudo docker compose up
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `WATCHTOWER_SCHEDULE` | `0 0 2 * * *` | cron 6필드. 매일 02:00 KST |
+| `WATCHTOWER_SCHEDULE` | `0 30 8 * * *` | cron 6필드. 매일 08:30 KST |
 | `WATCHTOWER_LABEL_ENABLE` | `true` | label 붙은 컨테이너만 감시 |
 | `WATCHTOWER_CLEANUP` | `true` | 오래된 이미지 자동 삭제 |
 | `WATCHTOWER_NOTIFICATION_REPORT` | `true` | 결과를 하나의 알림으로 요약 |

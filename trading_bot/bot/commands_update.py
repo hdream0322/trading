@@ -47,7 +47,7 @@ def cmd_update(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         update_manager.disable_auto(reason="telegram /update disable")
         return _reply(
             "🛑 *자동 업데이트 꺼짐*\n"
-            "이제 02:00 KST 자동 업데이트가 스킵됩니다.\n"
+            "이제 08:30 KST 자동 업데이트가 스킵됩니다.\n"
             "수동 업데이트는 여전히 가능합니다 — `/update` 로 확인, "
             "`/update confirm` 으로 실행.\n"
             "다시 켜려면 `/update enable`."

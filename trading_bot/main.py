@@ -62,19 +62,72 @@ def cycle_job(ctx: BotContext) -> None:
 
 
 def auto_update_job(ctx: BotContext) -> None:
-    """매일 02:00 KST — 자동 업데이트 스케줄 훅.
+    """매일 08:30 KST — 자동 업데이트 스케줄 훅.
 
-    상태 파일(data/AUTO_UPDATE_DISABLED) 검사 후 활성 상태면 Watchtower
-    HTTP API 호출. 비활성 상태면 로그만 남기고 스킵.
+    한국·미국 장 모두 닫힌 시간대. 상태 파일(data/AUTO_UPDATE_DISABLED)
+    검사 후 활성 상태면 GHCR digest 사전 확인 → 새 이미지가 있을 때만
+    Watchtower HTTP API 호출. 결과를 텔레그램으로 알려준다.
     """
+    from trading_bot import __version__ as current_version
+    from trading_bot.bot.commands_update import _summarize_release_body
+
     if not update_manager.is_auto_enabled():
         log.info("자동 업데이트 비활성 상태 — 02:00 스케줄 스킵")
         return
+
+    # 사전 확인: 새 이미지가 있는지 digest 비교
+    has_update = True  # 확인 실패 시 보수적으로 업데이트 시도
     try:
-        update_manager.trigger_update(ctx.settings.watchtower_http_token)
-        log.info("자동 업데이트 요청 전송 완료 (Watchtower 비동기 처리)")
+        has_update, _cur, _rem = update_manager.check_for_update()
     except Exception:
+        log.warning("업데이트 사전 확인 실패 — 보수적으로 업데이트 시도", exc_info=True)
+
+    if not has_update:
+        log.info("이미 최신 이미지 — 08:30 자동 업데이트 스킵")
+        return
+
+    # 릴리스 정보 조회 (실패해도 업데이트는 진행)
+    info: dict[str, str] | None = None
+    try:
+        info = update_manager.fetch_latest_release_info()
+    except Exception:
+        log.debug("릴리스 정보 조회 실패 — 알림에서 버전 생략")
+
+    try:
+        result = update_manager.trigger_update(ctx.settings.watchtower_http_token)
+        log.info("자동 업데이트 요청 전송 완료: %s", result.get("status"))
+
+        latest_version = (info or {}).get("tag") or "?"
+        lines = [
+            "🔄 *새 버전 발견, 업데이트 시작*",
+            "",
+            f"📦 `{current_version}` → `{latest_version}`",
+            "⏳ 약 30~60초 후 자동으로 재시작됩니다.",
+        ]
+        summary = _summarize_release_body((info or {}).get("body") or "")
+        if summary:
+            lines.append("")
+            lines.append("📋 *이번 변경 사항*")
+            lines.append("```")
+            lines.append(summary)
+            lines.append("```")
+
+        try:
+            telegram.send(ctx.settings.telegram, "\n".join(lines))
+        except Exception:
+            log.exception("자동 업데이트 알림 전송 실패")
+    except Exception as exc:
         log.exception("자동 업데이트 요청 실패")
+        try:
+            telegram.send(
+                ctx.settings.telegram,
+                f"❌ *자동 업데이트 실패*\n"
+                f"08:30 자동 업데이트를 시도했지만 실패했어요.\n"
+                f"`{exc}`\n\n"
+                f"수동 재시도: `/update confirm`",
+            )
+        except Exception:
+            log.exception("자동 업데이트 실패 알림 전송 실패")
 
 
 def weekly_holiday_reminder_job(ctx: BotContext) -> None:
@@ -490,10 +543,10 @@ def main() -> int:
         max_instances=1,
         coalesce=True,
     )
-    # 자동 업데이트 — 매일 02:00 KST 장외 시간
+    # 자동 업데이트 — 매일 08:30 KST (한국·미국 장 모두 닫힌 시간)
     scheduler.add_job(
         auto_update_job,
-        CronTrigger(hour=2, minute=0),
+        CronTrigger(hour=8, minute=30),
         args=[ctx],
         id="auto_update",
         max_instances=1,
