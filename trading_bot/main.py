@@ -121,6 +121,31 @@ def weekly_holiday_reminder_job(ctx: BotContext) -> None:
         log.exception("주간 휴장일 리마인더 전송 실패")
 
 
+def fundamentals_refresh_job(ctx: BotContext) -> None:
+    """매주 일요일 03:00 KST — 유니버스 전체 재무지표 캐시 갱신.
+
+    장외 시간 배치 실행으로 KIS throttle 부담 없음.
+    fundamentals.enabled=false 이면 스킵.
+    """
+    funda_cfg = getattr(ctx.settings, "fundamentals", None) or {}
+    from trading_bot.bot.commands_funda import is_enabled as _funda_is_enabled
+    if not _funda_is_enabled(funda_cfg):
+        log.info("펀더멘털 갱신 비활성 — 스킵")
+        return
+    try:
+        from trading_bot.signals import fundamentals
+        result = fundamentals.refresh_universe(ctx.settings.universe, ctx.kis)
+        log.info("펀더멘털 갱신 완료: %s", result)
+        if result.get("failed", 0) > 0:
+            telegram.send(
+                ctx.settings.telegram,
+                f"📊 *펀더멘털 주간 갱신*\n"
+                f"성공 {result['success']}개 · 실패 {result['failed']}개",
+            )
+    except Exception:
+        log.exception("펀더멘털 갱신 잡 실패")
+
+
 # 자동 킬스위치 복구 정책
 # - 자동 활성화 후 최소 15분 경과 + 최근 30분 에러 0건 → 자동 해제
 # - 해제 직후 1시간 내 재활성화되면 그 뒤로는 수동 해제만 허용 (플래핑 방지)
@@ -543,6 +568,15 @@ def main() -> int:
         CronTrigger(day_of_week="mon", hour=7, minute=0),
         args=[ctx],
         id="weekly_holiday_reminder",
+        max_instances=1,
+        coalesce=True,
+    )
+    # 펀더멘털 주간 갱신 — 매주 일요일 03:00 KST (장외 시간 배치)
+    scheduler.add_job(
+        fundamentals_refresh_job,
+        CronTrigger(day_of_week="sun", hour=3, minute=0),
+        args=[ctx],
+        id="fundamentals_refresh",
         max_instances=1,
         coalesce=True,
     )

@@ -39,6 +39,7 @@ python3 -m compileall -q trading_bot/
 PYTHONPATH=. .venv/bin/python scripts/stage3_verify.py  # 주문 경로
 PYTHONPATH=. .venv/bin/python scripts/stage4_verify.py  # 텔레그램 커맨드
 PYTHONPATH=. .venv/bin/python scripts/stage6_verify.py  # 청산 전략
+PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
 ```
 
 ## 런타임 상태 파일
@@ -47,8 +48,9 @@ PYTHONPATH=. .venv/bin/python scripts/stage6_verify.py  # 청산 전략
 (`docker-compose.yml` 볼륨 매핑으로 영속화, 이미지에 포함 안 됨, 권한 분리).
 
 `trading.sqlite`, `KILL_SWITCH`, `KILL_SWITCH_AUTO_RELEASE.log`, `AUTO_UPDATE_DISABLED`,
-`QUIET_MODE`, `current_image_digest`, `kis_mode_override`, `credentials.env`,
-`paper_account_issued`, `universe.json`, `backup/trading_YYYYMMDD.sqlite`.
+`QUIET_MODE`, `FUNDA_ENABLED`, `current_image_digest`, `kis_mode_override`,
+`credentials.env`, `paper_account_issued`, `universe.json`,
+`backup/trading_YYYYMMDD.sqlite`.
 
 신규 상태 파일을 추가할 때는 **반드시 `data/` 하위**로. `.env` 과 `data/credentials.env`
 는 `.gitignore` 대상, Docker 이미지 빌드 시 COPY 대상에서 제외.

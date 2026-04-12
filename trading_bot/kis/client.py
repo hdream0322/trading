@@ -233,6 +233,88 @@ class KisClient:
 
         raise RuntimeError(f"KIS 종목명 조회 실패 ({code}): {last_err}")
 
+    def get_financial_ratio(self, code: str, max_retries: int = 3) -> dict[str, Any]:
+        """종목의 재무비율 조회 (PER, PBR, ROE, EPS, BPS, 부채비율, 배당수익률).
+
+        KIS 재무비율 API (TR_ID FHKST66430300) 사용. 시세 서버(실전)를 통해 조회.
+        최근 연간 실적 기준. 조회 실패 시 RuntimeError.
+
+        반환: {per, pbr, roe, eps, bps, debt_ratio, dividend_yield}
+        """
+        cfg = self.quote_cfg
+        tr_id = "FHKST66430300"
+        params = {
+            "FID_DIV_CLS_CODE": "1",  # 1=연간
+            "fid_cond_mrkt_div_code": "J",  # J=주식
+            "fid_input_iscd": code,
+        }
+
+        attempt = 0
+        last_err: str = ""
+        while attempt < max_retries:
+            attempt += 1
+            self._throttle(cfg)
+            resp = self._quote_client.get(
+                "/uapi/domestic-stock/v1/finance/financial-ratio",
+                params=params,
+                headers=self._headers(cfg, tr_id),
+            )
+
+            body: dict[str, Any] | None
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+
+            if resp.status_code == 200 and body and body.get("rt_cd") == "0":
+                # output 은 분기/연간 리스트. 최신(첫 번째) 항목 사용.
+                output_list = body.get("output") or []
+                if not output_list:
+                    raise RuntimeError(f"KIS 재무비율 데이터 없음 ({code})")
+                latest = output_list[0]
+
+                def _to_float(val: Any) -> float | None:
+                    if val is None or str(val).strip() == "":
+                        return None
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return None
+
+                return {
+                    "per": _to_float(latest.get("per")),
+                    "pbr": _to_float(latest.get("pbr")),
+                    "roe": _to_float(latest.get("roe_val")),
+                    "eps": _to_float(latest.get("eps")),
+                    "bps": _to_float(latest.get("bps")),
+                    "debt_ratio": _to_float(latest.get("lblt_rate")),
+                    "dividend_yield": _to_float(latest.get("dvdn_rate")),
+                }
+
+            msg = (body or {}).get("msg1") if body else resp.text[:200]
+            msg_cd = (body or {}).get("msg_cd") if body else ""
+            last_err = f"status={resp.status_code} msg_cd={msg_cd} msg1={msg}"
+
+            is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
+            if is_rate_limit and attempt < max_retries:
+                backoff = 0.5 * attempt
+                log.warning(
+                    "재무비율 조회 rate limit (%s), %.1f초 대기 후 재시도 %d/%d",
+                    code, backoff, attempt, max_retries,
+                )
+                time.sleep(backoff)
+                continue
+            if resp.status_code >= 500 and attempt < max_retries:
+                log.warning(
+                    "재무비율 조회 서버 오류 (%s) %s, 재시도 %d/%d",
+                    code, last_err, attempt, max_retries,
+                )
+                time.sleep(0.3 * attempt)
+                continue
+            break
+
+        raise RuntimeError(f"KIS 재무비율 조회 실패 ({code}): {last_err}")
+
     def get_daily_ohlcv(self, code: str, days: int = 30, max_retries: int = 3) -> list[dict[str, Any]]:
         """최근 N 영업일의 일봉 OHLCV. 결과는 오래된 순 → 최신 순 정렬.
 

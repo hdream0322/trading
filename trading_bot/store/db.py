@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS position_state (
     trailing_active INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS fundamentals_cache (
+    code TEXT PRIMARY KEY,
+    name TEXT,
+    per REAL,
+    pbr REAL,
+    roe REAL,
+    eps REAL,
+    bps REAL,
+    debt_ratio REAL,
+    dividend_yield REAL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 CREATE INDEX IF NOT EXISTS idx_positions_ts ON positions_snapshot(ts);

@@ -34,6 +34,7 @@ from trading_bot.bot.commands_core import (
     cmd_stop,
 )
 from trading_bot.bot.commands_creds import cmd_reload, cmd_restart, cmd_setcreds
+from trading_bot.bot.commands_funda import cmd_funda
 from trading_bot.bot.commands_mode import cmd_mode
 from trading_bot.bot.commands_universe import (
     _execute_universe_add,
@@ -84,6 +85,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("setcreds", "텔레그램으로 앱키 직접 교체"),
     ("reload", "자격증명 재로드 (파일 수정 후)"),
     ("restart", "컨테이너 완전 재시작"),
+    ("funda", "종목 재무지표 조회/게이트 켜기·끄기"),
 ]
 
 
@@ -109,6 +111,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/setcreds": cmd_setcreds,
     "/reload": cmd_reload,
     "/restart": cmd_restart,
+    "/funda": cmd_funda,
 }
 
 
@@ -222,4 +225,5 @@ __all__ = [
     "cmd_setcreds",
     "cmd_reload",
     "cmd_restart",
+    "cmd_funda",
 ]

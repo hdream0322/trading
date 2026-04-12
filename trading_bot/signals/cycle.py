@@ -20,7 +20,7 @@ from trading_bot.kis.client import KisClient
 from trading_bot.notify import telegram
 from trading_bot.risk import kill_switch
 from trading_bot.risk.manager import RiskDecision, RiskManager
-from trading_bot.signals import cost_alert, exit_strategy, indicators, prefilter
+from trading_bot.signals import cost_alert, exit_strategy, fundamentals, indicators, prefilter
 from trading_bot.signals.llm import ClaudeSignalClient, LlmDecision
 from trading_bot.store import repo
 
@@ -212,6 +212,23 @@ def run_cycle(
                 "sma_trend": sma_trend,
             }
 
+            # 펀더멘털 캐시 조회 (사이클 중 API 호출 없이 캐시만)
+            funda_cfg = getattr(settings, "fundamentals", None) or {}
+            funda_cached = None
+            from trading_bot.bot.commands_funda import is_enabled as _funda_is_enabled
+            if _funda_is_enabled(funda_cfg):
+                max_age = int(funda_cfg.get("cache_max_age_days", 10))
+                funda_cached = fundamentals.get_cached(code, max_age_days=max_age)
+                if funda_cached:
+                    features["fundamentals"] = {
+                        "per": funda_cached.per,
+                        "pbr": funda_cached.pbr,
+                        "roe": funda_cached.roe,
+                        "debt_ratio": funda_cached.debt_ratio,
+                        "eps_growth": None,  # 단순 EPS 는 있지만 성장률은 별도 계산 필요
+                        "dividend_yield": funda_cached.dividend_yield,
+                    }
+
             candidate = prefilter.evaluate(features, settings.prefilter)
 
             if candidate is None:
@@ -337,6 +354,7 @@ def run_cycle(
                 holdings=holdings,
                 candidate_sector=sector_map.get(code) or None,
                 holdings_by_sector=holdings_by_sector,
+                fundamentals=funda_cached.__dict__ if funda_cached else None,
             )
 
             if not rd.allowed:

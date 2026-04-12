@@ -509,3 +509,80 @@ def get_accuracy_by_cross_check() -> dict[str, dict[str, Any]]:
         if c > 0:
             result[tag]["avg_return"] = result[tag]["sum_return"] / c
     return result
+
+
+# ─────────────────────────────────────────────────────────────
+# fundamentals_cache — 재무지표 캐시 (Stage 10)
+# ─────────────────────────────────────────────────────────────
+
+def get_fundamentals_cache(code: str) -> dict[str, Any] | None:
+    """fundamentals_cache 에서 단일 종목 조회. 없으면 None."""
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT code, name, per, pbr, roe, eps, bps,
+                      debt_ratio, dividend_yield, updated_at
+                 FROM fundamentals_cache WHERE code = ?""",
+            (code,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "code": row[0],
+            "name": row[1],
+            "per": row[2],
+            "pbr": row[3],
+            "roe": row[4],
+            "eps": row[5],
+            "bps": row[6],
+            "debt_ratio": row[7],
+            "dividend_yield": row[8],
+            "updated_at": row[9],
+        }
+
+
+def upsert_fundamentals_cache(
+    code: str,
+    name: str | None,
+    per: float | None,
+    pbr: float | None,
+    roe: float | None,
+    eps: float | None,
+    bps: float | None,
+    debt_ratio: float | None,
+    dividend_yield: float | None,
+    updated_at: str,
+) -> None:
+    """INSERT OR REPLACE 로 재무지표 캐시 갱신."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO fundamentals_cache
+               (code, name, per, pbr, roe, eps, bps, debt_ratio, dividend_yield, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (code, name, per, pbr, roe, eps, bps, debt_ratio, dividend_yield, updated_at),
+        )
+
+
+def get_all_fundamentals_cache() -> dict[str, dict[str, Any]]:
+    """전체 캐시 조회. {code: {...}} 맵."""
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT code, name, per, pbr, roe, eps, bps,
+                      debt_ratio, dividend_yield, updated_at
+                 FROM fundamentals_cache"""
+        )
+        result: dict[str, dict[str, Any]] = {}
+        for row in cur.fetchall():
+            result[row[0]] = {
+                "code": row[0],
+                "name": row[1],
+                "per": row[2],
+                "pbr": row[3],
+                "roe": row[4],
+                "eps": row[5],
+                "bps": row[6],
+                "debt_ratio": row[7],
+                "dividend_yield": row[8],
+                "updated_at": row[9],
+            }
+        return result

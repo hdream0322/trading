@@ -72,6 +72,7 @@ class Settings:
     prefilter: dict[str, Any]
     exit_rules: dict[str, Any]   # Stage 6: 손절/익절/트레일링 스톱
     rate_limit: dict[str, Any]   # KIS API throttle 간격 (초) — live/paper 별
+    fundamentals: dict[str, Any]  # Stage 10: 펀더멘털 리스크 게이트 설정
 
 
 def _require(name: str) -> str:
@@ -254,4 +255,5 @@ def load_settings() -> Settings:
         prefilter=raw.get("prefilter", {}),
         exit_rules=raw.get("exit", {}),
         rate_limit=raw.get("rate_limit", {}),
+        fundamentals=raw.get("fundamentals", {}),
     )
