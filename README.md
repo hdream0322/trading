@@ -39,7 +39,7 @@
 - **KIS rate limit 자동 재시도** — "초당 거래건수 초과"(HTTP 500) 백오프 재시도, `settings.yaml` 에서 간격 조정 가능
 - **런타임 자격증명 교체** — `/setcreds`, `/mode`, `/reload`, `/restart` 로 Docker 재시작 없이 앱키/모드 전환
 - **텔레그램 18개 커맨드** — 멀티라인 커맨드 지원, 인라인 버튼, chat_id 화이트리스트
-- **한국 휴장일 캘린더** — KRX 휴장일 YAML 관리, 주말/휴장일 자동 스킵 + 주간 리마인더
+- **한국 휴장일 캘린더** — `python-holidays` 기반 주간 자동 동기화, 주말/휴장일 자동 스킵
 - **일일 SQLite 백업** — 매일 01:55 KST 롤링 백업 (7일 보관)
 - **Docker 기반 자동 배포** — Watchtower + GHCR 파이프라인, main push → tag 푸시 → NAS 자동 반영
 
@@ -93,7 +93,7 @@
 │ long polling 스레드 │                    │
 │ 18 커맨드 + 버튼     │       ┌────────────┴────────────┐
 │ 멀티라인 지원         │      │ 9 크론 (백업/복구/브리핑     │
-└───────────────────┘       │  /만료/자격증명/휴장일/      │
+└───────────────────┘       │  /만료/자격증명/휴장동기화/  │
                             │  체결 확인/사후 정확도)      │
                             └─────────────────────────┘
 ```
@@ -563,8 +563,9 @@ exit:
 
 ### `config/market_holidays.yaml` — 휴장일
 
-한국거래소(KRX) 공식 달력을 매년 갱신. 매주 월요일 07:00 KST 에 주간 리마인더 알림이 옵니다
-(임시공휴일 대응).
+**매주 일요일 03:30 KST 에 자동 동기화**됩니다. 데이터 소스는 `python-holidays` 패키지(KR)
++ 연말 휴장 규칙(12/31 평일). 네트워크 독립적이라 외부 장애 영향이 없습니다. 변경이 있을 때만
+텔레그램으로 알림이 오고, 수동 편집은 비권장 (동기화 시 덮어써짐).
 
 ---
 
@@ -820,7 +821,7 @@ trading/
 ├─ CLAUDE.md                     프로젝트 가이드 (Claude Code 용)
 ├─ config/
 │   ├─ settings.yaml             universe / 사이클 / 리스크 / LLM / rate_limit / exit 파라미터
-│   └─ market_holidays.yaml      KRX 휴장일 (연 1회 갱신)
+│   └─ market_holidays.yaml      한국 휴장일 (python-holidays 주간 자동 동기화)
 ├─ scripts/
 │   ├─ stage3_verify.py          주문 실행 경로 E2E 검증
 │   ├─ stage4_verify.py          텔레그램 커맨드 핸들러 단위 검증
@@ -866,7 +867,8 @@ trading/
     ├─ notify/
     │   └─ telegram.py           sendMessage, getUpdates, inline keyboard
     └─ utils/
-        └─ calendar_kr.py        KRX 휴장일 + 장시간 판정
+        ├─ calendar_kr.py        휴장일 로딩 + 장시간 판정
+        └─ holiday_sync.py       python-holidays → YAML 자동 동기화
 ```
 
 </details>
