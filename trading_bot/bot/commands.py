@@ -33,6 +33,7 @@ from trading_bot.bot.commands_core import (
     cmd_status,
     cmd_stop,
 )
+from trading_bot.bot.commands_config import cmd_config
 from trading_bot.bot.commands_creds import cmd_reload, cmd_restart, cmd_setcreds
 from trading_bot.bot.commands_export import cmd_export
 from trading_bot.bot.commands_funda import cmd_funda
@@ -92,6 +93,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("export", "📤 데이터 내보내기 (CSV/DB 파일 전송)"),
     ("logs", "📋 서버 로그 조회 (텍스트/파일)"),
     ("init", "🚀 첫 설치자용 설정 마법사"),
+    ("config", "⚙️ 설정 파일 진단/확인"),
 ]
 
 
@@ -121,6 +123,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/export": cmd_export,
     "/logs": cmd_logs,
     "/init": cmd_init,
+    "/config": cmd_config,
 }
 
 
@@ -250,4 +253,5 @@ __all__ = [
     "cmd_funda",
     "cmd_export",
     "cmd_init",
+    "cmd_config",
 ]
