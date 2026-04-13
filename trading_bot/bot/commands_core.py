@@ -565,9 +565,31 @@ def _execute_confirmed_sell(ctx: BotContext, code: str) -> dict[str, Any]:
             raw_response=json.dumps(result["raw"], ensure_ascii=False)[:2000],
             reason="manual sell via telegram",
         )
+
+    # 접수 메시지를 먼저 보내고, 백그라운드로 체결 확인 + 텔레그램 알림.
+    # 시장가라 장중엔 수 초 내 체결되므로 5초 대기 후 한 번 reconcile.
+    # 미체결이면 다음 자동 사이클에서 어차피 잡힘.
+    def _post_fill_check() -> None:
+        import time as _t
+        from trading_bot.signals import fill_tracker
+        _t.sleep(5)
+        try:
+            with ctx.trading_lock:
+                fill_tracker.reconcile_pending_orders(
+                    ctx.kis,
+                    auto_cancel_unfilled_buys=False,
+                    telegram_cfg=ctx.settings.telegram,
+                )
+        except Exception:
+            log.exception("수동 판매 체결 확인 실패")
+
+    import threading
+    threading.Thread(target=_post_fill_check, daemon=True).start()
+
     return _reply(
         f"✅ *판매 주문 접수*\n"
         f"{p['name']} ({code})\n"
         f"{qty}주 지금 가격으로\n"
-        f"주문번호 `{order_no}`"
+        f"주문번호 `{order_no}`\n"
+        f"_체결되면 알림 드릴게요_"
     )

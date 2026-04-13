@@ -32,8 +32,17 @@ def rsi(closes: Sequence[float], period: int = 14) -> float:
     return 100.0 - (100.0 / (1.0 + rs))
 
 
-def volume_ratio(volumes: Sequence[float], lookback: int = 20) -> float:
-    """최근 거래량 대비 과거 lookback일 평균 거래량 비율."""
+def volume_ratio(
+    volumes: Sequence[float],
+    lookback: int = 20,
+    elapsed_ratio: float | None = None,
+) -> float:
+    """최근 거래량 대비 과거 lookback일 평균 거래량 비율.
+
+    elapsed_ratio: 당일 장 경과 비율(0~1). 장중 부분 누적 거래량을 받을 때 이 값으로
+      당일 실적을 정규화해 "이 시각에 이 페이스로 가면 평균 대비 몇 배" 를 추정한다.
+      None 이면 (장 마감 후 / 비거래일 / 역사 데이터) 보정 없이 원시 비율.
+    """
     if len(volumes) < lookback + 1:
         return 1.0
     latest = volumes[-1]
@@ -41,6 +50,9 @@ def volume_ratio(volumes: Sequence[float], lookback: int = 20) -> float:
     avg = sum(past) / len(past)
     if avg == 0:
         return 1.0
+    if elapsed_ratio is not None and elapsed_ratio > 0:
+        # 장중 부분 누적을 "풀데이 기대치" 로 스케일업
+        latest = latest / elapsed_ratio
     return latest / avg
 
 

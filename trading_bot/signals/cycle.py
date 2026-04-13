@@ -27,6 +27,47 @@ from trading_bot.store import repo
 log = logging.getLogger(__name__)
 
 
+# 직전 사이클의 prefilter 미통과 종목 지문 (프로세스 메모리). 같은 코드에서
+# 연속으로 동일한 hold 사유가 반복되면 DB 기록을 건너뛰어 signals 테이블이
+# "1차 미달" 노이즈로 가득 차는 걸 막는다. 재시작 시 초기화되므로 하루 첫
+# 한 번은 기록됨.
+_last_hold_fingerprint: dict[str, str] = {}
+
+
+# 개장 직후 워밍업 구간(분). 이 안에서는 경과 비율 보정을 끈다.
+# 이유: 1/390 같은 초소형 ratio 를 10% 로 클램핑해도 raw 거래량을 ~10배로
+# 뻥튀기해 개장 호가 폭주를 "거래량 급증" 으로 오판할 수 있다. 워밍업 동안은
+# raw 비율(당일 부분 누적 / 20일 평균) 을 쓰므로 자연스럽게 1.0 미만 → 1차 컷.
+_SESSION_WARMUP_MIN = 20
+
+
+def _elapsed_session_ratio(now: datetime, open_hhmm: str, close_hhmm: str) -> float | None:
+    """장 시작~마감 사이 경과 비율(0~1). 보정을 쓰지 말아야 할 구간은 None.
+
+    장중 부분 누적 거래량을 "풀데이 기대치" 로 스케일업해 vol_ratio 를 공정하게
+    비교하기 위한 보정 계수. 개장 직후 워밍업(_SESSION_WARMUP_MIN) 구간은
+    과대보정 위험이 있어 None 을 반환 (raw 비율 유지).
+    """
+    try:
+        oh, om = (int(x) for x in open_hhmm.split(":"))
+        ch, cm = (int(x) for x in close_hhmm.split(":"))
+    except (ValueError, AttributeError):
+        return None
+    open_t = dtime(oh, om)
+    close_t = dtime(ch, cm)
+    t = now.time()
+    if t < open_t or t > close_t:
+        return None
+    elapsed_min = (now.hour - oh) * 60 + (now.minute - om) + now.second / 60
+    total_min = (ch - oh) * 60 + (cm - om)
+    if total_min <= 0:
+        return None
+    if elapsed_min < _SESSION_WARMUP_MIN:
+        return None
+    ratio = elapsed_min / total_min
+    return min(1.0, ratio)
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -187,7 +228,16 @@ def run_cycle(
 
             rsi_period = int(settings.prefilter.get("rsi_period", 14))
             rsi_val = indicators.rsi(closes, period=rsi_period)
-            vol_ratio = indicators.volume_ratio(volumes, lookback=20)
+            # 장중 부분 누적 거래량 보정: 09:00~15:30 경과 비율로 latest 를 스케일업
+            mh = getattr(settings, "market_hours", None) or {}
+            elapsed_ratio = _elapsed_session_ratio(
+                datetime.now(),
+                str(mh.get("open", "09:00")),
+                str(mh.get("close", "15:30")),
+            )
+            vol_ratio = indicators.volume_ratio(
+                volumes, lookback=20, elapsed_ratio=elapsed_ratio
+            )
             current_price = closes[-1]
             prev_close = closes[-2] if len(closes) >= 2 else current_price
             change_pct = ((current_price - prev_close) / prev_close * 100.0) if prev_close else 0.0
@@ -232,19 +282,27 @@ def run_cycle(
             candidate = prefilter.evaluate(features, settings.prefilter)
 
             if candidate is None:
-                repo.insert_signal(
-                    ts=_now_iso(),
-                    code=code, name=name,
-                    decision="hold", confidence=None,
-                    rule_features=json.dumps(features, ensure_ascii=False),
-                    llm_model=None,
-                    llm_reasoning="1차 조건 통과 못함 (RSI/거래량 기준 미달)",
-                    llm_input_tokens=None, llm_output_tokens=None,
-                    llm_cost_usd=None,
-                )
+                # 연속 동일 사유 hold 는 DB 에 남기지 않는다 (signals 테이블 노이즈 방지).
+                # 상태가 바뀌는 첫 사이클만 기록 → 추이 복원 가능, 용량 급감.
+                fp = "hold|prefilter_fail"
+                if _last_hold_fingerprint.get(code) != fp:
+                    repo.insert_signal(
+                        ts=_now_iso(),
+                        code=code, name=name,
+                        decision="hold", confidence=None,
+                        rule_features=json.dumps(features, ensure_ascii=False),
+                        llm_model=None,
+                        llm_reasoning="1차 조건 통과 못함 (RSI/거래량 기준 미달)",
+                        llm_input_tokens=None, llm_output_tokens=None,
+                        llm_cost_usd=None,
+                    )
+                    _last_hold_fingerprint[code] = fp
                 summary["hold"] += 1
                 log.info("%s %s: 관망 (RSI=%.1f, vol=%.2fx)", code, name, rsi_val, vol_ratio)
                 continue
+
+            # 후보로 뽑혔으면 다음 사이클부터는 hold 재기록 허용
+            _last_hold_fingerprint.pop(code, None)
 
             summary["candidates"] += 1
 
@@ -452,7 +510,9 @@ def run_cycle(
             log.info("체결 확인 대기 중 — 30초…")
             _time.sleep(30)
         from trading_bot.signals import fill_tracker
-        fill_result = fill_tracker.reconcile_pending_orders(kis)
+        fill_result = fill_tracker.reconcile_pending_orders(
+            kis, telegram_cfg=settings.telegram,
+        )
         if fill_result["checked"] > 0:
             log.info("체결 추적 결과: %s", fill_result)
     except Exception:

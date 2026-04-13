@@ -3,15 +3,61 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from trading_bot.config import TelegramConfig
 from trading_bot.kis.client import KisClient
+from trading_bot.notify import telegram
 from trading_bot.store import repo
 
 log = logging.getLogger(__name__)
 
 
+def _fmt_won(n: int | float | None) -> str:
+    if n is None:
+        return "-"
+    try:
+        return f"{int(n):,}원"
+    except (ValueError, TypeError):
+        return str(n)
+
+
+def _notify_fill(
+    tg: TelegramConfig | None,
+    side: str,
+    code: str,
+    name: str,
+    qty: int,
+    avg_price: int | None,
+    status: str,
+    reason: str | None = None,
+) -> None:
+    if tg is None:
+        return
+    side_ko = "매수" if side == "buy" else "매도" if side == "sell" else side
+    icon = {"filled": "✅", "partial": "🟡", "cancelled": "⛔"}.get(status, "ℹ️")
+    head = {
+        "filled": f"{icon} *{side_ko} 체결 완료*",
+        "partial": f"{icon} *{side_ko} 부분 체결*",
+        "cancelled": f"{icon} *{side_ko} 주문 취소*",
+    }.get(status, f"{icon} {side_ko} {status}")
+    lines = [
+        head,
+        f"{name} (`{code}`)",
+        f"{qty}주 @ {_fmt_won(avg_price)}",
+    ]
+    if avg_price and qty:
+        lines.append(f"체결금액 {_fmt_won(avg_price * qty)}")
+    if reason:
+        lines.append(f"_{reason}_")
+    try:
+        telegram.send(tg, "\n".join(lines))
+    except Exception:
+        log.exception("체결 알림 전송 실패")
+
+
 def reconcile_pending_orders(
     kis: KisClient,
     auto_cancel_unfilled_buys: bool = True,
+    telegram_cfg: TelegramConfig | None = None,
 ) -> dict[str, int]:
     """오늘 submitted 상태인 주문들의 체결 여부를 KIS 당일 체결 조회로 확인.
 
@@ -72,6 +118,8 @@ def reconcile_pending_orders(
             result["errors"] += 1
             continue
 
+        side = str(p.get("side") or "").lower()
+
         if cncl_yn == "Y" and tot_ccld == 0:
             repo.update_order_status(
                 order_id=p["id"],
@@ -80,6 +128,10 @@ def reconcile_pending_orders(
             )
             result["cancelled"] += 1
             log.info("주문 취소 확인 [%s %s] %s", p["code"], p["name"], odno)
+            _notify_fill(
+                telegram_cfg, side, p["code"], p["name"], ord_qty,
+                None, "cancelled", "KIS 체결 조회 결과 취소",
+            )
             continue
 
         if tot_ccld >= ord_qty and ord_qty > 0:
@@ -92,6 +144,10 @@ def reconcile_pending_orders(
             result["filled"] += 1
             log.info("주문 체결 확인 [%s %s] %s @ %s원",
                      p["code"], p["name"], odno, avg_price)
+            _notify_fill(
+                telegram_cfg, side, p["code"], p["name"], tot_ccld,
+                avg_price, "filled",
+            )
             continue
 
         if 0 < tot_ccld < ord_qty:
@@ -104,10 +160,13 @@ def reconcile_pending_orders(
             result["partial"] += 1
             log.warning("주문 부분 체결 [%s %s] %s %d/%d",
                         p["code"], p["name"], odno, tot_ccld, ord_qty)
+            _notify_fill(
+                telegram_cfg, side, p["code"], p["name"], tot_ccld,
+                avg_price, "partial", f"{tot_ccld}/{ord_qty}주 체결, 나머지 대기",
+            )
             continue
 
         # tot_ccld_qty == 0, 미취소 → 미체결 대기 상태
-        side = str(p.get("side") or "").lower()
         if auto_cancel_unfilled_buys and side == "buy":
             # 매수 미체결 — 가격이 너무 빨리 움직였거나 상/하한가 근접.
             # 자동 취소 후 다음 사이클에서 재판단. 체결 조직번호 없으면 취소 불가.
@@ -133,6 +192,10 @@ def reconcile_pending_orders(
                 log.warning(
                     "미체결 매수 자동 취소 [%s %s] %s (잔량 %d주)",
                     p["code"], p["name"], odno, cancel_qty,
+                )
+                _notify_fill(
+                    telegram_cfg, side, p["code"], p["name"], cancel_qty,
+                    None, "cancelled", "30초 내 미체결 — 자동 취소",
                 )
             except Exception as exc:
                 log.exception(
