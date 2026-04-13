@@ -34,6 +34,7 @@ from trading_bot.bot.commands_core import (
     cmd_stop,
 )
 from trading_bot.bot.commands_config import cmd_config
+from trading_bot.bot.commands_set import cmd_set, handle_set_callback
 from trading_bot.bot.commands_creds import cmd_reload, cmd_restart, cmd_setcreds
 from trading_bot.bot.commands_export import cmd_export
 from trading_bot.bot.commands_funda import cmd_funda
@@ -94,6 +95,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("logs", "📋 서버 로그 조회 (텍스트/파일)"),
     ("init", "🚀 첫 설치자용 설정 마법사"),
     ("config", "⚙️ 설정 파일 진단/확인"),
+    ("set", "⚙️ 설정값 변경 (화이트리스트 키)"),
 ]
 
 
@@ -124,6 +126,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/logs": cmd_logs,
     "/init": cmd_init,
     "/config": cmd_config,
+    "/set": cmd_set,
 }
 
 
@@ -206,6 +209,8 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         except (TypeError, ValueError):
             chat_id = 0
         return handle_init_callback(ctx, chat_id, data)
+    if data.startswith("set:"):
+        return handle_set_callback(ctx, data)
     return _reply(f"모르는 버튼: `{data}`")
 
 
@@ -254,4 +259,5 @@ __all__ = [
     "cmd_export",
     "cmd_init",
     "cmd_config",
+    "cmd_set",
 ]

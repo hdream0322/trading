@@ -59,6 +59,8 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /config — ⚙️ 설정 파일 진단 (누락 키/섹션 체크)
 /config raw — settings.yaml 원본 텍스트
 /config file — settings.yaml 파일 첨부로 받기
+/set — ⚙️ 편집 가능한 키 목록 + 현재값
+/set risk.daily_loss_limit_pct 5 — 값 변경 (확정 버튼)
 /export — 📤 데이터 CSV 로 받기 (버튼 메뉴)
 /export signals — 오늘 점검 전체 (RSI/거래량/판정)
 /export nearmiss — 1차 통과 직전이었던 종목 TOP20
