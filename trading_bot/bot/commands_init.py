@@ -582,27 +582,49 @@ def _step_summary(ctx: BotContext) -> dict[str, Any]:
     llm = s.llm or {}
     exit_rules = s.exit_rules or {}
 
+    def _pct(d: dict, key: str, sign: str = "") -> str:
+        """dict 에서 값을 꺼내 '±N%' 형태로. 없으면 '미설정'."""
+        v = d.get(key)
+        if v is None:
+            return "_미설정_"
+        return f"`{sign}{v}%`"
+
+    def _val(d: dict, key: str, suffix: str = "") -> str:
+        v = d.get(key)
+        if v is None:
+            return "_미설정_"
+        return f"`{v}{suffix}`"
+
+    try:
+        conf_pct = f"`{int(float(llm.get('confidence_threshold', 0)) * 100)}%`"
+    except (TypeError, ValueError):
+        conf_pct = "_미설정_"
+
+    cost_limit = llm.get("daily_cost_limit_usd")
+    cost_line = f"`${cost_limit}`" if cost_limit is not None else "_미설정_"
+
     lines = [
         "*4️⃣ 주요 수치 확인*",
         "",
         "_현재 `config/settings.yaml` 값입니다._",
         "",
         "*리스크*",
-        f"- 1일 손실 한도: `{risk.get('daily_loss_limit_pct', '?')}%`",
-        f"- 동시 보유 최대 종목수: `{risk.get('max_concurrent_positions', '?')}`",
-        f"- 종목당 비중 상한: `{risk.get('max_position_per_symbol_pct', '?')}%`",
+        f"- 1일 손실 한도: {_pct(risk, 'daily_loss_limit_pct')}",
+        f"- 동시 보유 최대 종목수: {_val(risk, 'max_concurrent_positions')}",
+        f"- 종목당 비중 상한: {_pct(risk, 'max_position_per_symbol_pct')}",
         "",
         "*청산 규칙*",
-        f"- 손절: `-{exit_rules.get('stop_loss_pct', '?')}%`",
-        f"- 익절: `+{exit_rules.get('take_profit_pct', '?')}%`",
-        f"- 트레일링 발동: `+{exit_rules.get('trailing_activation_pct', '?')}%`",
+        f"- 손절: {_pct(exit_rules, 'stop_loss_pct', sign='-')}",
+        f"- 익절: {_pct(exit_rules, 'take_profit_pct', sign='+')}",
+        f"- 트레일링 발동: {_pct(exit_rules, 'trailing_activation_pct', sign='+')}",
         "",
         "*AI*",
         f"- 모델: `{llm.get('model', '?')}`",
-        f"- 확신도 임계값: `{int(float(llm.get('confidence_threshold', 0)) * 100)}%`",
-        f"- 오늘 비용 한도: `${llm.get('daily_cost_limit_usd', '?')}`",
+        f"- 확신도 임계값: {conf_pct}",
+        f"- 일일 비용 한도: {cost_line}",
         "",
-        "_수치 변경은 `config/settings.yaml` 수정 후 `/restart` 또는 `/reload`._",
+        "_값이 `미설정` 으로 보이면 `config/settings.yaml` 의 해당 섹션을 확인하세요._",
+        "_수치 변경은 파일 수정 후 `/restart` 또는 `/reload`._",
     ]
     return _reply("\n".join(lines), reply_markup=_finish_keyboard())
 
