@@ -38,69 +38,97 @@ log = logging.getLogger(__name__)
 
 HELP_TEXT = """*자동매매 봇 사용법*
 
-*🏠 시작*
-/init — 🚀 첫 설치자용 설정 마법사 (버튼으로 단계별 설정)
-/menu — 메인 메뉴 (자주 쓰는 동작을 버튼으로)
+━━━━━━━━━━━━━━━━━━━━
+*🏠 시작 · 허브*
+━━━━━━━━━━━━━━━━━━━━
+`/init` — 🚀 첫 설치 마법사 (처음 한 번, 버튼으로 단계별)
+`/menu` — 메인 메뉴 (자주 쓰는 기능을 버튼으로)
+`/help` — 이 도움말
 
-*📊 조회*
-/status — 지금 상태 (모드, 총 자산, 긴급정지, AI 비용)
-/positions — 갖고 있는 주식 + 판매 버튼
-/signals — 오늘 나온 매매 추천 (최근 10개)
-/cost — 오늘 AI 분석 비용
-/mode — 거래 모드 조회 (전환 버튼 있음)
-/universe — 추적 중인 종목 목록
-/universe add 005490 — 종목 추가 (이름 확인 후 예/아니오)
-/universe remove — 종목 제거 (버튼으로 선택)
-/universe remove 005490 — 코드 직접 지정 제거
-/funda 005930 — 종목 재무지표 (PER/PBR/ROE/부채비율)
-/funda enable — 펀더멘털 게이트 켜기
-/funda disable — 펀더멘털 게이트 끄기
-/about — 봇 버전, 가동 시간, 전체 설정 요약
-/config — ⚙️ 설정 파일 진단 (누락 키/섹션 체크)
-/config raw — settings.yaml 원본 텍스트
-/config file — settings.yaml 파일 첨부로 받기
-/set — ⚙️ 편집 가능한 키 목록 + 현재값
-/set risk.daily_loss_limit_pct 5 — 값 변경 (확정 버튼)
-/export — 📤 데이터 CSV 로 받기 (버튼 메뉴)
-/export signals — 오늘 점검 전체 (RSI/거래량/판정)
-/export nearmiss — 1차 통과 직전이었던 종목 TOP20
-/export orders 7 — 최근 7일 주문 내역
-/export errors 3 — 최근 3일 에러 로그
-/export db — DB 파일 통째로 (50MB 미만)
+━━━━━━━━━━━━━━━━━━━━
+*📊 지금 상태 · 조회*
+━━━━━━━━━━━━━━━━━━━━
+`/status` — 총자산·예수금·긴급정지·오늘 비용
+`/positions` — 갖고 있는 주식 (판매 버튼 포함)
+`/signals` — 오늘 매매 추천 (최근 10개)
+`/accuracy` — AI 판단 적중률 (사후 검증)
+`/cost` — 오늘 AI 분석 비용
+`/about` — 버전·업타임·전체 설정 요약
 
-*📋 로그*
-/logs — 최근 30줄 (복사 가능한 코드블록)
-/logs 100 — 최근 100줄 (길면 자동 파일 전환)
-/logs error — 최근 ERROR/WARNING 30건
-/logs file — 오늘 로그 파일 다운로드
-/logs file 2026-04-12 — 특정 날짜 파일
+━━━━━━━━━━━━━━━━━━━━
+*💸 수동 거래*
+━━━━━━━━━━━━━━━━━━━━
+`/sell` — 보유 종목 선택해 판매
+`/sell 005930` — 코드 직접 지정 판매
+`/cycle` — 지금 바로 점검 한 번 실행
 
-*⚙️ 조작*
-/stop — 🛑 긴급 정지 (새로 구매 안 함)
-/resume — ✅ 긴급 정지 풀기
-/quiet — 🔕 조용 모드 (10분 사이클 요약 끔, 거래/에러는 그대로)
-/sell — 보유 종목 목록에서 선택해 판매
-/sell 005930 — 코드 직접 지정 판매
-/cycle — 지금 바로 점검 한 번 돌리기
+━━━━━━━━━━━━━━━━━━━━
+*🛑 안전장치*
+━━━━━━━━━━━━━━━━━━━━
+`/stop` — 🛑 긴급 정지 (새로 구매 차단)
+`/resume` — ✅ 긴급 정지 풀기
+`/quiet` — 🔕 조용 모드 (10분 요약 끔, 거래/에러는 그대로)
 
-*🔄 업데이트*
-/update — 최신 버전 확인 (현재/최신 버전 표시만)
-/update confirm — 실제 업데이트 실행
-/update enable — 자동 업데이트 켜기 (매일 02:00 KST)
-/update disable — 자동 업데이트 끄기
-/update status — 자동 업데이트 상태 확인
+━━━━━━━━━━━━━━━━━━━━
+*⚙️ 설정 변경*
+━━━━━━━━━━━━━━━━━━━━
+*거래 모드*
+`/mode` — 현재 모드 + 전환 버튼
+`/mode paper` / `/mode live confirm` — 직접 전환
 
-*🔑 자격증명 · 재시작*
-/setcreds — 텔레그램으로 앱키 직접 교체 (3개월 갱신 시)
-/reload — data/credentials.env 파일 재로드
-/restart — 컨테이너 완전 재시작 (강력 재초기화)
+*종목 관리*
+`/universe` — 추적 종목 목록
+`/universe add 005490` — 추가 (이름 확인 후 예/아니오)
+`/universe remove` — 제거 (버튼 선택)
+`/universe remove 005490` — 코드 직접 지정 제거
 
-/help — 이 도움말
+*수치 조정 (settings.yaml)*
+`/config` — 설정 파일 진단 (누락 키 체크)
+`/config raw` / `/config file` — 원본 텍스트/첨부
+`/set` — 편집 가능 키 목록 + 현재값 + 범위
+`/set risk.daily_loss_limit_pct 5` — 값 변경 (확정 버튼)
 
----
-_매 10분마다 봇이 관심 종목들을 점검합니다._
-_조건이 맞으면 AI가 판단해서 자동으로 주문을 넣습니다._
-_모든 매매는 안전장치 8단계를 거쳐야 실행됩니다._
+*펀더멘털 게이트*
+`/funda 005930` — 종목 재무지표 (PER/PBR/ROE/부채비율)
+`/funda enable` / `/funda disable` — 게이트 토글
+
+━━━━━━━━━━━━━━━━━━━━
+*📋 로그 · 데이터 내보내기*
+━━━━━━━━━━━━━━━━━━━━
+`/logs` — 최근 30줄
+`/logs 100` — 최근 100줄 (길면 파일 전환)
+`/logs error` — 최근 ERROR/WARNING 30건
+`/logs file` — 오늘 로그 파일 다운로드
+`/logs file 2026-04-12` — 특정 날짜 파일
+
+`/export` — 📤 CSV 내보내기 메뉴
+`/export signals` — 오늘 점검 전체 (RSI/거래량/판정)
+`/export nearmiss` — 1차 통과 직전 TOP20
+`/export orders 7` — 최근 7일 주문
+`/export errors 3` — 최근 3일 에러
+`/export db` — DB 파일 통째로 (50MB 미만)
+
+━━━━━━━━━━━━━━━━━━━━
+*🔄 업데이트 · 재시작*
+━━━━━━━━━━━━━━━━━━━━
+`/update` — 최신 버전 확인
+`/update confirm` — 실제 업데이트 실행
+`/update enable` / `/update disable` — 자동 업데이트 토글 (매일 02:00)
+`/update status` — 자동 업데이트 상태
+
+`/reload` — 자격증명 파일 재로드 (키 교체 후)
+`/restart` — 컨테이너 완전 재시작 (강력 재초기화)
+
+━━━━━━━━━━━━━━━━━━━━
+*🔑 자격증명*
+━━━━━━━━━━━━━━━━━━━━
+`/setcreds` — 앱키/시크릿/계좌번호 교체 (3개월 갱신 시)
+_(`/init` 안에서도 대화형 입력 가능)_
+
+━━━━━━━━━━━━━━━━━━━━
+_매 10분마다 봇이 관심 종목을 점검합니다._
+_조건 충족 시 AI가 판단해 자동 주문._
+_모든 매매는 안전장치 8단계를 거칩니다._
 """
 
 
