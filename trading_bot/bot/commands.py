@@ -33,7 +33,7 @@ from trading_bot.bot.commands_core import (
     cmd_status,
     cmd_stop,
 )
-from trading_bot.bot.commands_config import cmd_config
+from trading_bot.bot.commands_config import cmd_config, handle_config_callback
 from trading_bot.bot.commands_set import cmd_set, handle_set_callback
 from trading_bot.bot.commands_creds import cmd_reload, cmd_restart, cmd_setcreds
 from trading_bot.bot.commands_export import cmd_export
@@ -211,6 +211,8 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         return handle_init_callback(ctx, chat_id, data)
     if data.startswith("set:"):
         return handle_set_callback(ctx, data)
+    if data.startswith("config:"):
+        return handle_config_callback(ctx, data)
     return _reply(f"모르는 버튼: `{data}`")
 
 

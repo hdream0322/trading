@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir \
 
 COPY trading_bot/ ./trading_bot/
 COPY config/ ./config/
+# 기본 설정 스냅샷 — /config reset 시 이 경로에서 복원.
+# bind mount 로 덮이지 않는 별도 경로라 런타임에 항상 접근 가능.
+COPY config/ ./config_defaults/
 COPY scripts/ ./scripts/
 
 CMD ["python", "-m", "trading_bot.main"]

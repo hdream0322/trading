@@ -85,6 +85,7 @@ HELP_TEXT = """*자동매매 봇 사용법*
 *수치 조정 (settings.yaml)*
 `/config` — 설정 파일 진단 (누락 키 체크)
 `/config raw` / `/config file` — 원본 텍스트/첨부
+`/config reset` — ♻️ 기본값으로 한 방에 되돌리기 (확정 버튼)
 `/set` — 편집 가능 키 목록 + 현재값 + 범위
 `/set risk.daily_loss_limit_pct 5` — 값 변경 (확정 버튼)
 

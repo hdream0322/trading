@@ -16,7 +16,7 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./tokens:/app/tokens
-      - ./config:/app/config:ro
+      - ./config:/app/config  # 텔레그램 /set, /config reset 가 settings.yaml 을 쓰므로 ro 제거
     command: ["python", "-m", "trading_bot.main"]
     labels:
       # Watchtower 가 이 label=true 컨테이너만 감시/업데이트 대상으로 삼는다.
