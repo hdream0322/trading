@@ -25,11 +25,14 @@ log = logging.getLogger(__name__)
 _LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
 _LOG_FILE = _LOG_DIR / "bot.log"
 
-# 텔레그램 메시지 한도 4096자. 코드블록 펜스(```...```)·여유 차감해 안전치.
+# 텔레그램 메시지 한도 4096자. 코드블록 펜스(```...```)·여유 차감한 안전치.
+# 줄 수로 이미 컷하지만 한 줄이 비정상적으로 긴 경우 보호선으로만 사용.
 _MAX_TEXT = 3800
 # 기본/최대 줄 수
 _DEFAULT_LINES = 30
 _MAX_LINES = 500
+# 인라인 텍스트로 보낼 최대 줄 수 — 이 이상은 메시지 스팸 방지로 파일 전환
+_TEXT_LINE_THRESHOLD = 30
 
 
 def cmd_logs(ctx: BotContext, args: list[str]) -> dict[str, Any]:
@@ -107,20 +110,24 @@ def _send_filtered(n: int, level_filter: set[str]) -> dict[str, Any]:
 
 
 def _format_or_file(lines: list[str], label: str) -> dict[str, Any]:
-    """줄 배열을 받아 4096자 내면 코드블록 텍스트, 넘치면 파일로 자동 전환."""
+    """30줄 이하는 코드블록 텍스트, 초과면 파일 전송.
+
+    줄 수 규칙이 기본, 한 줄이 비정상적으로 긴 경우(전체 4096자 초과)
+    안전망으로 한 번 더 파일 전환한다.
+    """
     text_body = "\n".join(lines)
-    # 코드블록 ```...``` 은 탭 한 번에 복사 가능.
-    # parse_mode=Markdown 호환. 안에 ``` 이 있으면 깨질 수 있지만 로그에선 드묾.
     candidate = f"*로그 — {label}*\n```\n{text_body}\n```"
-    if len(candidate) <= _MAX_TEXT:
+
+    if len(lines) <= _TEXT_LINE_THRESHOLD and len(candidate) <= _MAX_TEXT:
         return _reply(candidate)
 
-    # 너무 길면 파일로 전환
     filename = f"logs_{label.replace(' ', '_').replace('/', '-')[:40]}.txt"
-    caption = (
-        f"*로그 — {label}*\n"
-        f"_메시지 길이 초과({len(candidate):,}자 > {_MAX_TEXT:,}자) 로 파일로 보냅니다_"
+    reason = (
+        f"{len(lines)}줄 (기준 {_TEXT_LINE_THRESHOLD}줄 초과)"
+        if len(lines) > _TEXT_LINE_THRESHOLD
+        else f"메시지 길이 {len(candidate):,}자 초과"
     )
+    caption = f"*로그 — {label}*\n_{reason} 로 파일로 보냅니다_"
     content = text_body.encode("utf-8")
     return {"document": (filename, content), "text": caption}
 
