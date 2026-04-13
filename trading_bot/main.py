@@ -130,48 +130,52 @@ def auto_update_job(ctx: BotContext) -> None:
             log.exception("자동 업데이트 실패 알림 전송 실패")
 
 
-def weekly_holiday_reminder_job(ctx: BotContext) -> None:
-    """매주 월요일 07:00 KST — 휴장일 YAML 점검 리마인더.
+def holiday_sync_job(ctx: BotContext) -> None:
+    """매주 일요일 03:30 KST — 올해 휴장일 자동 동기화.
 
-    임시공휴일이 중간에 지정될 수 있어서 주간 확인이 필요. YAML 을 다시 로드한
-    뒤 앞으로 14일 이내 등록된 휴장일을 보여주고, KRX 포털 링크를 함께 보냄.
-    사용자가 직접 확인·수정하는 흐름.
+    `python-holidays` 로 `config/market_holidays.yaml` 의 올해 블록 덮어쓰기 +
+    calendar_kr 캐시 재로딩. 변경(추가/삭제)이 있을 때만 텔레그램 알림.
+    실패 시 기존 YAML 유지 + 경고 알림.
     """
-    from trading_bot.utils.calendar_kr import reload_holidays, upcoming_holidays
+    from trading_bot.utils.calendar_kr import reload_holidays
+    from trading_bot.utils.holiday_sync import sync_holidays_yaml
 
+    year = datetime.now().year
     try:
-        count = reload_holidays()
-        upcoming = upcoming_holidays(days_ahead=14)
-    except Exception:
-        log.exception("주간 휴장일 리마인더 실패")
+        result = sync_holidays_yaml(year)
+        reload_holidays()
+    except Exception as exc:
+        log.exception("휴장일 동기화 실패")
+        try:
+            telegram.send(
+                ctx.settings.telegram,
+                "❌ *휴장일 자동 동기화 실패*\n"
+                f"`{exc}`\n\n"
+                "`python-holidays` 패키지 갱신 여부를 확인해주세요.",
+            )
+        except Exception:
+            log.exception("휴장일 동기화 실패 알림 전송 실패")
         return
 
-    lines = [
-        "📅 *주간 휴장일 점검*",
-        f"등록된 휴장일 총 {count}개 로드 완료.",
-        "",
-    ]
-    if upcoming:
-        lines.append("*앞으로 14일 이내 등록된 휴장일*")
-        for d in upcoming:
-            weekday_ko = ["월", "화", "수", "목", "금", "토", "일"][d.weekday()]
-            lines.append(f"- {d:%Y-%m-%d} ({weekday_ko})")
-    else:
-        lines.append("_앞으로 14일 내 등록된 휴장일 없음._")
+    added = result["added"]
+    removed = result["removed"]
+    if not added and not removed:
+        log.info("휴장일 동기화: %d년 %d개, 변경 없음", year, result["count"])
+        return
 
+    lines = [f"📅 *{year}년 휴장일 자동 동기화*", ""]
+    if added:
+        lines.append(f"➕ 추가 {len(added)}개")
+        lines.extend(f"  - {d}" for d in added)
+    if removed:
+        lines.append(f"➖ 제거 {len(removed)}개")
+        lines.extend(f"  - {d}" for d in removed)
     lines.append("")
-    lines.append(
-        "⚠️ *임시공휴일이 갑자기 지정될 수 있어요.*\n"
-        "KRX 공식 캘린더와 비교해 확인해주세요:\n"
-        "https://open.krx.co.kr/contents/MKD/01/0110/01100305/MKD01100305.jsp\n\n"
-        "수정이 필요하면 `config/market_holidays.yaml` 파일을 고치고 "
-        "`/restart` 로 봇을 재시작하면 반영됩니다."
-    )
-
+    lines.append(f"_총 {result['count']}개 로드됨._")
     try:
         telegram.send(ctx.settings.telegram, "\n".join(lines))
     except Exception:
-        log.exception("주간 휴장일 리마인더 전송 실패")
+        log.exception("휴장일 동기화 알림 전송 실패")
 
 
 def fundamentals_refresh_job(ctx: BotContext) -> None:
@@ -615,12 +619,12 @@ def main() -> int:
         max_instances=1,
         coalesce=True,
     )
-    # 주간 휴장일 점검 리마인더 — 매주 월요일 07:00 KST
+    # 휴장일 자동 동기화 (python-holidays) — 매주 일요일 03:30 KST
     scheduler.add_job(
-        weekly_holiday_reminder_job,
-        CronTrigger(day_of_week="mon", hour=7, minute=0),
+        holiday_sync_job,
+        CronTrigger(day_of_week="sun", hour=3, minute=30),
         args=[ctx],
-        id="weekly_holiday_reminder",
+        id="holiday_sync",
         max_instances=1,
         coalesce=True,
     )

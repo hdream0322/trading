@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir \
         "pyyaml>=6.0" \
         "python-dotenv>=1.0" \
         "anthropic>=0.40" \
-        "apscheduler>=3.10,<4"
+        "apscheduler>=3.10,<4" \
+        "holidays>=0.50"
 
 COPY trading_bot/ ./trading_bot/
 COPY config/ ./config/
