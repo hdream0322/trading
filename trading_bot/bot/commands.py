@@ -36,6 +36,7 @@ from trading_bot.bot.commands_core import (
 from trading_bot.bot.commands_creds import cmd_reload, cmd_restart, cmd_setcreds
 from trading_bot.bot.commands_export import cmd_export
 from trading_bot.bot.commands_funda import cmd_funda
+from trading_bot.bot.commands_logs import cmd_logs
 from trading_bot.bot.commands_mode import cmd_mode
 from trading_bot.bot.commands_universe import (
     _execute_universe_add,
@@ -88,6 +89,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("restart", "컨테이너 완전 재시작"),
     ("funda", "종목 재무지표 조회/게이트 켜기·끄기"),
     ("export", "📤 데이터 내보내기 (CSV/DB 파일 전송)"),
+    ("logs", "📋 서버 로그 조회 (텍스트/파일)"),
 ]
 
 
@@ -115,6 +117,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/restart": cmd_restart,
     "/funda": cmd_funda,
     "/export": cmd_export,
+    "/logs": cmd_logs,
 }
 
 

@@ -62,6 +62,13 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /export errors 3 — 최근 3일 에러 로그
 /export db — DB 파일 통째로 (50MB 미만)
 
+*📋 로그*
+/logs — 최근 30줄 (복사 가능한 코드블록)
+/logs 100 — 최근 100줄 (길면 자동 파일 전환)
+/logs error — 최근 ERROR/WARNING 30건
+/logs file — 오늘 로그 파일 다운로드
+/logs file 2026-04-12 — 특정 날짜 파일
+
 *⚙️ 조작*
 /stop — 🛑 긴급 정지 (새로 구매 안 함)
 /resume — ✅ 긴급 정지 풀기
