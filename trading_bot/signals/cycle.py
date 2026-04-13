@@ -15,7 +15,8 @@ from trading_bot.bot.commands import (
     fmt_won,
     mode_badge,
 )
-from trading_bot.config import Settings
+from trading_bot.bot import commands_init
+from trading_bot.config import Settings, is_init_completed
 from trading_bot.kis.client import KisClient
 from trading_bot.notify import telegram
 from trading_bot.risk import kill_switch
@@ -131,6 +132,20 @@ def run_cycle(
 ) -> dict[str, Any]:
     """단일 시그널 사이클. 시그널 발효 시 리스크 게이트 통과하면 실제 주문까지 실행."""
     log.info("=== 사이클 시작 (mode=%s) ===", settings.kis.mode)
+
+    # /init 마법사 미완료 상태면 첫 사이클에 한 번만 안내 (차단은 안 함 —
+    # 설치자가 이미 .env 로 셋업했을 수도 있어서 사이클 자체는 계속 진행).
+    if not is_init_completed() and not commands_init.notice_sent_flag():
+        try:
+            telegram.send(
+                settings.telegram,
+                "👋 *처음 구동하셨나요?*\n\n"
+                "`/init` 으로 설치 마법사를 시작할 수 있어요.\n"
+                "_자격증명·모드·추적 종목을 버튼 몇 번으로 설정 완료._",
+            )
+        except Exception:
+            log.warning("/init 안내 전송 실패", exc_info=True)
+        commands_init.mark_notice_sent()
     summary: dict[str, Any] = {
         "total": 0, "candidates": 0,
         "buy": 0, "sell": 0, "hold": 0, "errors": 0,

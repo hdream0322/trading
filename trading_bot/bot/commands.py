@@ -36,6 +36,7 @@ from trading_bot.bot.commands_core import (
 from trading_bot.bot.commands_creds import cmd_reload, cmd_restart, cmd_setcreds
 from trading_bot.bot.commands_export import cmd_export
 from trading_bot.bot.commands_funda import cmd_funda
+from trading_bot.bot.commands_init import cmd_init, handle_init_callback
 from trading_bot.bot.commands_logs import cmd_logs
 from trading_bot.bot.commands_mode import cmd_mode
 from trading_bot.bot.commands_universe import (
@@ -90,6 +91,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("funda", "종목 재무지표 조회/게이트 켜기·끄기"),
     ("export", "📤 데이터 내보내기 (CSV/DB 파일 전송)"),
     ("logs", "📋 서버 로그 조회 (텍스트/파일)"),
+    ("init", "🚀 첫 설치자용 설정 마법사"),
 ]
 
 
@@ -118,6 +120,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/funda": cmd_funda,
     "/export": cmd_export,
     "/logs": cmd_logs,
+    "/init": cmd_init,
 }
 
 
@@ -194,6 +197,12 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
     if data.startswith("export_"):
         sub = data.split("_", 1)[1]
         return cmd_export(ctx, [sub])
+    if data.startswith("init:"):
+        try:
+            chat_id = int(ctx.settings.telegram.chat_id)
+        except (TypeError, ValueError):
+            chat_id = 0
+        return handle_init_callback(ctx, chat_id, data)
     return _reply(f"모르는 버튼: `{data}`")
 
 
@@ -240,4 +249,5 @@ __all__ = [
     "cmd_restart",
     "cmd_funda",
     "cmd_export",
+    "cmd_init",
 ]

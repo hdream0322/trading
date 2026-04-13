@@ -5,6 +5,7 @@ import threading
 import time
 from typing import Any
 
+from trading_bot.bot import commands_init
 from trading_bot.bot.commands import handle_callback, handle_command
 from trading_bot.bot.context import BotContext
 from trading_bot.notify import telegram
@@ -83,6 +84,34 @@ class TelegramPoller:
                 return
             text = (msg.get("text") or "").strip()
             if not text.startswith("/"):
+                # /init 마법사의 자격증명/유니버스 입력 대기 중이면 이쪽으로 위임.
+                # 세션이 없으면 None 돌려주고 기존 동작대로 무시.
+                try:
+                    chat_id_int = int(from_id)
+                except (TypeError, ValueError):
+                    chat_id_int = 0
+                reply = commands_init.handle_init_text(self.ctx, chat_id_int, text)
+                if reply is None:
+                    return
+                # 자격증명 값이 포함된 원본 메시지는 무조건 삭제
+                should_delete = bool(reply.get("delete_original", False))
+                try:
+                    telegram.send(
+                        self.ctx.settings.telegram,
+                        reply.get("text", ""),
+                        reply_markup=reply.get("reply_markup"),
+                    )
+                except Exception:
+                    log.exception("init 텍스트 응답 전송 실패")
+                if should_delete:
+                    msg_id = msg.get("message_id")
+                    if msg_id:
+                        try:
+                            telegram.delete_message(
+                                self.ctx.settings.telegram, int(msg_id)
+                            )
+                        except Exception:
+                            log.exception("init 원본 메시지 삭제 실패")
                 return
 
             # 한 말풍선에 여러 줄 커맨드가 올 수 있음 — 줄 단위로 쪼개 순차 실행.

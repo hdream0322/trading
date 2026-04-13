@@ -29,6 +29,22 @@ CREDENTIALS_OVERRIDE_FILE = ROOT / "data" / "credentials.env"
 # 커맨드가 이 파일을 갱신하며, 변경은 메모리(ctx.settings.universe)에도 즉시 반영됨.
 UNIVERSE_OVERRIDE_FILE = ROOT / "data" / "universe.json"
 
+# /init 마법사 완료 플래그. 파일이 존재하면 첫 설치 안내를 더 이상 보내지 않음.
+INIT_COMPLETED_FILE = ROOT / "data" / "init_completed"
+
+
+def is_init_completed() -> bool:
+    return INIT_COMPLETED_FILE.exists()
+
+
+def mark_init_completed() -> None:
+    from datetime import datetime, timezone
+    INIT_COMPLETED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    INIT_COMPLETED_FILE.write_text(
+        datetime.now(timezone.utc).isoformat() + "\n",
+        encoding="utf-8",
+    )
+
 
 @dataclass
 class KisConfig:
