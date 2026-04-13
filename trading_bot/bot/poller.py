@@ -136,13 +136,23 @@ class TelegramPoller:
                     marker = "⛔" if is_error_reply else "🔹"
                     out_text = f"{marker} *({idx}/{total})* `{cmd}`\n{reply_text}"
 
-                # 3. 응답 전송
+                # 3. 응답 전송 — document 첨부 응답이면 sendDocument, 아니면 sendMessage
                 try:
-                    telegram.send(
-                        self.ctx.settings.telegram,
-                        out_text,
-                        reply_markup=reply.get("reply_markup"),
-                    )
+                    doc = reply.get("document")
+                    if doc:
+                        filename, content = doc
+                        telegram.send_document(
+                            self.ctx.settings.telegram,
+                            filename,
+                            content,
+                            caption=out_text or None,
+                        )
+                    else:
+                        telegram.send(
+                            self.ctx.settings.telegram,
+                            out_text,
+                            reply_markup=reply.get("reply_markup"),
+                        )
                 except Exception:
                     log.exception("응답 전송 실패: %s", cmd)
 
@@ -198,9 +208,19 @@ class TelegramPoller:
             telegram.answer_callback(self.ctx.settings.telegram, cq_id, "")
             reply = handle_callback(self.ctx, data)
             if reply:
-                telegram.send(
-                    self.ctx.settings.telegram,
-                    reply.get("text", ""),
-                    reply_markup=reply.get("reply_markup"),
-                )
+                doc = reply.get("document")
+                if doc:
+                    filename, content = doc
+                    telegram.send_document(
+                        self.ctx.settings.telegram,
+                        filename,
+                        content,
+                        caption=reply.get("text") or None,
+                    )
+                else:
+                    telegram.send(
+                        self.ctx.settings.telegram,
+                        reply.get("text", ""),
+                        reply_markup=reply.get("reply_markup"),
+                    )
             return

@@ -40,6 +40,35 @@ def send(
         return False
 
 
+def send_document(
+    cfg: TelegramConfig,
+    filename: str,
+    content: bytes,
+    caption: str | None = None,
+) -> bool:
+    """파일 첨부 전송 (sendDocument). Telegram 업로드 한도 50MB."""
+    data: dict[str, Any] = {"chat_id": cfg.chat_id}
+    if caption:
+        # caption 은 최대 1024자
+        data["caption"] = caption[:1024]
+        data["parse_mode"] = "Markdown"
+    files = {"document": (filename, content, "application/octet-stream")}
+    try:
+        resp = httpx.post(
+            _api_url(cfg, "sendDocument"),
+            data=data,
+            files=files,
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            log.warning("Telegram sendDocument 실패 [%s]: %s", resp.status_code, resp.text[:300])
+            return False
+        return True
+    except Exception as exc:
+        log.warning("Telegram sendDocument 예외: %s", exc)
+        return False
+
+
 def get_updates(
     cfg: TelegramConfig,
     offset: int = 0,

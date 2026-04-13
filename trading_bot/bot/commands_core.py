@@ -55,6 +55,12 @@ HELP_TEXT = """*자동매매 봇 사용법*
 /funda enable — 펀더멘털 게이트 켜기
 /funda disable — 펀더멘털 게이트 끄기
 /about — 봇 버전, 가동 시간, 전체 설정 요약
+/export — 📤 데이터 CSV 로 받기 (버튼 메뉴)
+/export signals — 오늘 점검 전체 (RSI/거래량/판정)
+/export nearmiss — 1차 통과 직전이었던 종목 TOP20
+/export orders 7 — 최근 7일 주문 내역
+/export errors 3 — 최근 3일 에러 로그
+/export db — DB 파일 통째로 (50MB 미만)
 
 *⚙️ 조작*
 /stop — 🛑 긴급 정지 (새로 구매 안 함)

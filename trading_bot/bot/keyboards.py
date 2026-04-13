@@ -182,6 +182,25 @@ def restart_confirm_keyboard() -> dict[str, Any]:
     }
 
 
+def export_menu_keyboard() -> dict[str, Any]:
+    """/export (인자 없음) 응답 하단의 내보내기 종류 선택 버튼."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📋 오늘 점검 전체", "callback_data": "export_signals"},
+                {"text": "🔍 1차 미달 근접", "callback_data": "export_nearmiss"},
+            ],
+            [
+                {"text": "🧾 주문 7일", "callback_data": "export_orders"},
+                {"text": "🐞 에러 3일", "callback_data": "export_errors"},
+            ],
+            [
+                {"text": "🗄️ DB 통째로", "callback_data": "export_db"},
+            ],
+        ]
+    }
+
+
 def _universe_confirm_keyboard(action: str, code: str) -> dict[str, Any]:
     """action: 'add' 또는 'remove'."""
     verb = "추가" if action == "add" else "제거"

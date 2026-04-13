@@ -34,6 +34,7 @@ from trading_bot.bot.commands_core import (
     cmd_stop,
 )
 from trading_bot.bot.commands_creds import cmd_reload, cmd_restart, cmd_setcreds
+from trading_bot.bot.commands_export import cmd_export
 from trading_bot.bot.commands_funda import cmd_funda
 from trading_bot.bot.commands_mode import cmd_mode
 from trading_bot.bot.commands_universe import (
@@ -86,6 +87,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("reload", "자격증명 재로드 (파일 수정 후)"),
     ("restart", "컨테이너 완전 재시작"),
     ("funda", "종목 재무지표 조회/게이트 켜기·끄기"),
+    ("export", "📤 데이터 내보내기 (CSV/DB 파일 전송)"),
 ]
 
 
@@ -112,6 +114,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/reload": cmd_reload,
     "/restart": cmd_restart,
     "/funda": cmd_funda,
+    "/export": cmd_export,
 }
 
 
@@ -185,6 +188,9 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         return cmd_funda(ctx, ["disable"])
     if data == "restart_confirm":
         return cmd_restart(ctx, ["confirm"])
+    if data.startswith("export_"):
+        sub = data.split("_", 1)[1]
+        return cmd_export(ctx, [sub])
     return _reply(f"모르는 버튼: `{data}`")
 
 
@@ -230,4 +236,5 @@ __all__ = [
     "cmd_reload",
     "cmd_restart",
     "cmd_funda",
+    "cmd_export",
 ]
