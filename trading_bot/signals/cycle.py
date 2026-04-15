@@ -538,6 +538,22 @@ def run_cycle(
         balance_summary, executed_events, fill_result,
     )
     log.info("=== 사이클 종료: %s ===", summary)
+
+    # 사이클 실행 횟수 추적 — 마감 브리핑의 "총 N회 점검" 집계용
+    try:
+        repo.record_cycle_run(
+            ts=_now_iso(),
+            total_stocks=summary["total"],
+            candidates=summary["candidates"],
+            buy=summary["buy"],
+            sell=summary["sell"],
+            hold=summary["hold"],
+            errors=summary["errors"],
+            cost_usd=summary["cost_usd"],
+        )
+    except Exception:
+        log.exception("cycle_runs 기록 실패")
+
     return summary
 
 

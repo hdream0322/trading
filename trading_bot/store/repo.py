@@ -192,10 +192,31 @@ def get_today_orders() -> list[dict[str, object]]:
         ]
 
 
+def record_cycle_run(
+    ts: str,
+    total_stocks: int,
+    candidates: int,
+    buy: int,
+    sell: int,
+    hold: int,
+    errors: int,
+    cost_usd: float,
+) -> None:
+    """사이클 실행 1회를 cycle_runs 테이블에 기록."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO cycle_runs
+               (ts, total_stocks, candidates, buy, sell, hold, errors, cost_usd)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts, total_stocks, candidates, buy, sell, hold, errors, cost_usd),
+        )
+
+
 def get_today_signal_summary() -> dict[str, int]:
     """오늘 사이클에서 나온 판단(decision) 카운트 + 차단 사유 집계.
 
     장 마감 브리핑 "왜 거래가 없었나" 사후 설명 및 /signals 통계용.
+    total_checks: cycle_runs 테이블 기준 (사이클 실행 횟수).
     """
     today = datetime.now().strftime("%Y-%m-%d")
     out: dict[str, int] = {
@@ -208,13 +229,19 @@ def get_today_signal_summary() -> dict[str, int]:
         "risk_rejected": 0,
     }
     with _conn() as conn:
+        # 사이클 실행 횟수는 cycle_runs 테이블 기준
+        cur0 = conn.execute(
+            "SELECT COUNT(*) FROM cycle_runs WHERE substr(ts, 1, 10) = ?",
+            (today,),
+        )
+        out["total_checks"] = int(cur0.fetchone()[0])
+
         cur = conn.execute(
             """SELECT decision, confidence, llm_reasoning
                  FROM signals WHERE substr(ts, 1, 10) = ?""",
             (today,),
         )
         for decision, confidence, reasoning in cur.fetchall():
-            out["total_checks"] += 1
             rtext = reasoning or ""
             if "1차 조건 통과 못함" in rtext:
                 continue

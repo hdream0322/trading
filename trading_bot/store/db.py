@@ -89,9 +89,22 @@ CREATE TABLE IF NOT EXISTS fundamentals_cache (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cycle_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    total_stocks INTEGER NOT NULL,
+    candidates INTEGER NOT NULL DEFAULT 0,
+    buy INTEGER NOT NULL DEFAULT 0,
+    sell INTEGER NOT NULL DEFAULT 0,
+    hold INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0
+);
+
 CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 CREATE INDEX IF NOT EXISTS idx_positions_ts ON positions_snapshot(ts);
+CREATE INDEX IF NOT EXISTS idx_cycle_runs_ts ON cycle_runs(ts);
 """
 
 
