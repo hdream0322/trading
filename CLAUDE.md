@@ -49,7 +49,7 @@ PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
 
 `trading.sqlite`, `KILL_SWITCH`, `KILL_SWITCH_AUTO_RELEASE.log`, `AUTO_UPDATE_DISABLED`,
 `QUIET_MODE`, `FUNDA_ENABLED`, `current_image_digest`, `kis_mode_override`,
-`credentials.env`, `paper_account_issued`, `universe.json`,
+`credentials.env`, `paper_account_issued`, `universe.json`, `init_notice_sent`,
 `backup/trading_YYYYMMDD.sqlite`.
 
 신규 상태 파일을 추가할 때는 **반드시 `data/` 하위**로. `.env` 과 `data/credentials.env`

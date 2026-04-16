@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from trading_bot.bot import expiry, mode_switch, runtime_state
@@ -45,17 +47,22 @@ _CRED_LABELS = {
     "account_no": "계좌번호 (8자리 숫자)",
 }
 
-# 한 번만 전송하는 첫 사이클 안내 플래그 (프로세스 메모리)
-_INIT_NOTICE_SENT = False
+# 한 번만 전송하는 첫 사이클 안내 플래그 (data/ 에 파일로 영속화)
+_INIT_NOTICE_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "init_notice_sent"
 
 
 def notice_sent_flag() -> bool:
-    return _INIT_NOTICE_SENT
+    return _INIT_NOTICE_FILE.exists()
 
 
 def mark_notice_sent() -> None:
-    global _INIT_NOTICE_SENT
-    _INIT_NOTICE_SENT = True
+    try:
+        _INIT_NOTICE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _INIT_NOTICE_FILE.write_text(
+            datetime.now().isoformat(), encoding="utf-8"
+        )
+    except Exception:
+        log.warning("init_notice_sent 플래그 저장 실패", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────────────
