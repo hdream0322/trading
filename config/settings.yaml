@@ -48,9 +48,9 @@ llm:
 
 prefilter:
   rsi_period: 14
-  rsi_buy_below: 35
-  rsi_sell_above: 70
-  min_volume_ratio: 1.2       # 20일 평균 대비 거래량이 1.2배 이상일 때만 후보
+  rsi_buy_below: 40           # 횡보장에서 LLM 호출 자체가 0인 상황 완화 (35 → 40)
+  rsi_sell_above: 65          # 매도 후보도 한 단계 완화 (70 → 65)
+  min_volume_ratio: 1.0       # 평균 거래량 이상이면 후보 인정 (1.2 → 1.0)
   trend_filter_enabled: true  # 추세 필터: 현재가가 SMA 아래면 매수 후보 제외 (떨어지는 칼날 차단)
   trend_sma_period: 20        # 추세 판단용 이동평균선 기간 (일)
 
