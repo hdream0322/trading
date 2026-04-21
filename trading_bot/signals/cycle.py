@@ -294,7 +294,9 @@ def run_cycle(
                         "dividend_yield": funda_cached.dividend_yield,
                     }
 
-            candidate = prefilter.evaluate(features, settings.prefilter)
+            held_pos = holdings.get(code)
+            is_held = bool(held_pos and held_pos.get("qty", 0) > 0)
+            candidate = prefilter.evaluate(features, settings.prefilter, held=is_held)
 
             if candidate is None:
                 # 연속 동일 사유 hold 는 DB 에 남기지 않는다 (signals 테이블 노이즈 방지).
@@ -342,6 +344,26 @@ def run_cycle(
                 cost_alert.maybe_alert_limit(daily_cost, daily_limit, settings.telegram)
                 summary["errors"] += 1
                 continue
+
+            # 쿨다운 프리체크 — risk.check 안의 쿨다운 게이트는 LLM 호출 후에 평가되어
+            # 미체결/거절 직후 같은 종목에 대해 매 사이클 LLM 비용을 태우게 된다.
+            # 여기서 미리 짧게 보고 스킵하면 사이클당 $0.01 안팎의 낭비를 막는다.
+            cooldown_min = int((settings.risk or {}).get("cooldown_minutes", 30))
+            last_ts = repo.get_last_order_ts(code)
+            if last_ts:
+                try:
+                    elapsed_min = (
+                        datetime.now() - datetime.fromisoformat(last_ts)
+                    ).total_seconds() / 60
+                    if elapsed_min < cooldown_min:
+                        log.info(
+                            "%s %s 쿨다운(%d/%d분) — LLM 호출 생략",
+                            code, name, int(elapsed_min), cooldown_min,
+                        )
+                        summary["hold"] += 1
+                        continue
+                except ValueError:
+                    pass
 
             decision = llm.decide(features, ohlcv)
             daily_cost += decision.cost_usd
