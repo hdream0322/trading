@@ -11,6 +11,19 @@ from trading_bot.config import TelegramConfig
 log = logging.getLogger(__name__)
 
 
+# 모듈 전역 httpx.Client — 연결/TLS 핸드셰이크 재사용.
+# 매 호출마다 새 TCP+TLS 를 세우면 KIS 버스트 직후 sendMessage 가 10초 안에
+# 못 붙어 timed out 으로 떨어지는 문제가 발생함. Client 재사용으로 handshake
+# 비용을 1회로 고정.
+# connect=5s 는 DNS+TCP+TLS 여유, read=20s 는 Telegram API 혼잡 구간 흡수.
+_DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+_client = httpx.Client(
+    timeout=_DEFAULT_TIMEOUT,
+    limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+    http2=False,
+)
+
+
 def _api_url(cfg: TelegramConfig, method: str) -> str:
     return f"https://api.telegram.org/bot{cfg.bot_token}/{method}"
 
@@ -30,7 +43,7 @@ def send(
     if reply_markup is not None:
         payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
     try:
-        resp = httpx.post(_api_url(cfg, "sendMessage"), json=payload, timeout=10)
+        resp = _client.post(_api_url(cfg, "sendMessage"), json=payload)
         if resp.status_code != 200:
             log.warning("Telegram sendMessage 실패 [%s]: %s", resp.status_code, resp.text)
             return False
@@ -54,11 +67,12 @@ def send_document(
         data["parse_mode"] = "Markdown"
     files = {"document": (filename, content, "application/octet-stream")}
     try:
-        resp = httpx.post(
+        # 파일 업로드는 큰 페이로드라 read timeout 60s 로 개별 상향.
+        resp = _client.post(
             _api_url(cfg, "sendDocument"),
             data=data,
             files=files,
-            timeout=60,
+            timeout=httpx.Timeout(60.0, connect=5.0),
         )
         if resp.status_code != 200:
             log.warning("Telegram sendDocument 실패 [%s]: %s", resp.status_code, resp.text[:300])
@@ -82,10 +96,11 @@ def get_updates(
         "allowed_updates": json.dumps(["message", "callback_query"]),
     }
     try:
-        resp = httpx.get(
+        # long polling 은 서버가 timeout 초만큼 잡고 있을 수 있으므로 read 를 그에 +10.
+        resp = _client.get(
             _api_url(cfg, "getUpdates"),
             params=params,
-            timeout=timeout + 10,
+            timeout=httpx.Timeout(float(timeout + 10), connect=5.0),
         )
         if resp.status_code != 200:
             log.warning("Telegram getUpdates 실패 [%s]: %s", resp.status_code, resp.text)
@@ -117,11 +132,7 @@ def set_commands(cfg: TelegramConfig, commands: list[tuple[str, str]]) -> bool:
         ]
     }
     try:
-        resp = httpx.post(
-            _api_url(cfg, "setMyCommands"),
-            json=payload,
-            timeout=10,
-        )
+        resp = _client.post(_api_url(cfg, "setMyCommands"), json=payload)
         if resp.status_code != 200:
             log.warning("Telegram setMyCommands 실패 [%s]: %s", resp.status_code, resp.text)
             return False
@@ -143,11 +154,7 @@ def delete_message(cfg: TelegramConfig, message_id: int) -> bool:
         "message_id": message_id,
     }
     try:
-        resp = httpx.post(
-            _api_url(cfg, "deleteMessage"),
-            json=payload,
-            timeout=10,
-        )
+        resp = _client.post(_api_url(cfg, "deleteMessage"), json=payload)
         if resp.status_code != 200:
             log.warning(
                 "Telegram deleteMessage 실패 [%s]: %s",
@@ -173,11 +180,7 @@ def answer_callback(
         "show_alert": show_alert,
     }
     try:
-        resp = httpx.post(
-            _api_url(cfg, "answerCallbackQuery"),
-            json=payload,
-            timeout=10,
-        )
+        resp = _client.post(_api_url(cfg, "answerCallbackQuery"), json=payload)
         return resp.status_code == 200
     except Exception as exc:
         log.warning("Telegram answerCallbackQuery 예외: %s", exc)
