@@ -157,6 +157,13 @@ PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
   교체 완료 후에만 응답 (30~60초). `httpx.ReadTimeout` 을 **성공 (처리 중)** 으로
   해석해야 함. `update_manager.trigger_update` 에 이미 반영됨.
 
+- **컨테이너 IPv6 함정.** Docker 기본 bridge 는 IPv6 미구성인데 glibc 는 AAAA 응답을
+  먼저 돌려줌 → `connect()` 가 `[Errno 99] Cannot assign requested address` 로 주기적
+  실패 (Telegram getUpdates/sendMessage 가 10~30초씩 지연되는 원인). `docker-compose.yml`
+  `trading-bot.sysctls` 에 `net.ipv6.conf.all.disable_ipv6=1` 로 컨테이너 내부만 IPv6
+  차단해 해결. 절대 지우지 말 것. 재현 진단: `sudo docker exec trading-bot sh -c
+  'getent hosts api.telegram.org'` 가 IPv6 만 반환하면 이 문제.
+
 - **LLM 모델 교체 시 단가 동기화 누락.** Anthropic API 응답은 **토큰 수만** 주고 비용은
   안 준다. 봇이 `signals/llm.py` 에서 `settings.yaml llm.input_price_per_mtok` /
   `output_price_per_mtok` 로 직접 곱해 SQLite `signals.llm_cost_usd` 에 적재 →

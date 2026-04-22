@@ -12,6 +12,14 @@ services:
       - .env
     environment:
       - TZ=Asia/Seoul
+    # Docker 기본 bridge 네트워크는 IPv6 미구성 상태인데, glibc/getaddrinfo 는
+    # api.telegram.org 같은 도메인을 IPv6(AAAA)으로 해석해 버린다. 그러면 connect()
+    # 시 로컬 IPv6 주소 바인드 실패 → `[Errno 99] Cannot assign requested address`
+    # 로 요청이 주기적으로 지연/실패함 (Telegram 응답 지연의 실제 원인).
+    # 컨테이너 내부에서만 IPv6 스택을 꺼 IPv4 경로만 사용하도록 강제한다.
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
