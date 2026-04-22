@@ -42,6 +42,26 @@ PYTHONPATH=. .venv/bin/python scripts/stage6_verify.py  # 청산 전략
 PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
 ```
 
+## NAS 배포 환경
+
+- **SSH**: `ssh hdream0322_admin@192.168.0.148 -p 2222` (로컬 네트워크)
+- **compose 경로**: `/volume1/docker/trading` — `docker-compose.yml`, `.env`,
+  `config/`, `data/`, `logs/`, `tokens/` 모두 이 아래. git repo 아님 (Container Manager
+  배포 경로). compose 변경은 **repo 업데이트 → 수동 curl/복사** 로 반영.
+- **Docker 명령은 sudo 필수** (DSM Container Manager 권한 분리). 예:
+  `sudo docker compose up -d --force-recreate trading-bot`
+- **이미지 업데이트**는 Telegram `/update confirm` 으로 자동 처리 (Watchtower).
+  **compose/sysctls/volumes 변경**은 이미지에 안 담기므로 SSH 필요:
+  ```bash
+  cd /volume1/docker/trading
+  sudo cp docker-compose.yml docker-compose.yml.bak
+  sudo curl -fL -o docker-compose.yml \
+    https://raw.githubusercontent.com/hdream0322/trading/vX.Y.Z/docker-compose.yml
+  sudo docker compose up -d --force-recreate trading-bot
+  ```
+- Container Manager 가 `/volume1/@appdata/ContainerManager/all_shares/docker/trading`
+  경로도 보이지만 동일 디렉토리 (bind mount). 수정은 `/volume1/docker/trading` 에서.
+
 ## 런타임 상태 파일
 
 컨테이너 재시작·이미지 업데이트에도 유지되어야 하는 상태는 **전부 `data/` 안**에 둔다
