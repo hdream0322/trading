@@ -158,11 +158,17 @@ PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
   해석해야 함. `update_manager.trigger_update` 에 이미 반영됨.
 
 - **컨테이너 IPv6 함정.** Docker 기본 bridge 는 IPv6 미구성인데 glibc 는 AAAA 응답을
-  먼저 돌려줌 → `connect()` 가 `[Errno 99] Cannot assign requested address` 로 주기적
-  실패 (Telegram getUpdates/sendMessage 가 10~30초씩 지연되는 원인). `docker-compose.yml`
-  `trading-bot.sysctls` 에 `net.ipv6.conf.all.disable_ipv6=1` 로 컨테이너 내부만 IPv6
-  차단해 해결. 절대 지우지 말 것. 재현 진단: `sudo docker exec trading-bot sh -c
-  'getent hosts api.telegram.org'` 가 IPv6 만 반환하면 이 문제.
+  돌려줌 → `connect()` 가 `[Errno 99] Cannot assign requested address` 로 주기적
+  실패 (Telegram getUpdates/sendMessage 가 10~30초씩 지연되는 원인). 해결은
+  `docker-compose.yml` 에 **삼중 방어**로 되어 있음, 절대 하나라도 지우지 말 것:
+  1. `environment: RES_OPTIONS=no-aaaa` — glibc resolver 가 AAAA 질의 자체를 생략.
+     가장 강력한 자물쇠, 이거 하나만으로 대부분 해결.
+  2. `sysctls: net.ipv6.conf.*.disable_ipv6=1` — 컨테이너 내부 IPv6 스택 끔.
+  3. `/etc/gai.conf` 마운트 (`config/gai.conf`) — IPv4 매핑 주소 precedence 100 으로
+     IPv4 우선순위 보장.
+  재현 진단:
+  `sudo docker exec trading-bot python -c "import socket; print(socket.getaddrinfo('api.telegram.org', 443, type=socket.SOCK_STREAM))"`
+  결과에 `AF_INET6` 이 보이면 세 자물쇠 중 하나가 풀린 것.
 
 - **LLM 모델 교체 시 단가 동기화 누락.** Anthropic API 응답은 **토큰 수만** 주고 비용은
   안 준다. 봇이 `signals/llm.py` 에서 `settings.yaml llm.input_price_per_mtok` /
