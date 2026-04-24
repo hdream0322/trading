@@ -1,16 +1,33 @@
 mode: paper  # paper | live (환경변수 KIS_MODE가 우선)
 
 universe:
+  # 전기·전자
   - {code: "005930", name: "삼성전자"}
   - {code: "000660", name: "SK하이닉스"}
-  - {code: "035720", name: "카카오"}
-  - {code: "035420", name: "NAVER"}
+  - {code: "058470", name: "리노공업"}
+  - {code: "066970", name: "엘앤에프"}
+  # 운송장비·부품
   - {code: "005380", name: "현대차"}
+  - {code: "000270", name: "기아"}
+  # IT 서비스
+  - {code: "035420", name: "NAVER"}
+  - {code: "035720", name: "카카오"}
+  - {code: "461300", name: "아이스크림미디어"}
+  # 운송·창고
+  - {code: "003490", name: "대한항공"}
+  # 금속
   - {code: "005490", name: "POSCO홀딩스"}
+  # 화학
   - {code: "051910", name: "LG화학"}
+  # 제약
   - {code: "068270", name: "셀트리온"}
+  # 금융
   - {code: "055550", name: "신한지주"}
+  - {code: "001040", name: "CJ"}
+  # 전기·가스
   - {code: "015760", name: "한국전력"}
+  # 기계·장비
+  - {code: "277810", name: "레인보우로보틱스"}
 
 cycle_minutes: 10
 
