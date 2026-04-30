@@ -50,13 +50,13 @@ risk:
   max_concurrent_positions: 5        # 동시 보유 최대 종목 수
   max_per_sector: 2                  # 동일 섹터(업종) 최대 보유 종목 수 (분산 강화)
   daily_loss_limit_pct: 3           # 전일 대비 이만큼 손실 시 신규 매수 차단
-  cooldown_minutes: 60              # 같은 종목 재진입까지 최소 대기
+  cooldown_minutes: 30              # 같은 종목 재진입까지 최소 대기 (60 → 30 거래 활성화)
   max_orders_per_day: 6             # 일일 총 주문 건수 상한
 
 llm:
   model: "claude-haiku-4-5-20251001"
   temperature: 0
-  confidence_threshold: 0.75
+  confidence_threshold: 0.65
   daily_cost_limit_usd: 3      # 하드 한도: 도달 시 그날 LLM 호출 전면 차단 + 텔레그램 알림
   daily_cost_warn_usd: 1.0     # 소프트 경고: 누적 도달 시 텔레그램 1회 조기 경고 (차단 없음)
   # Anthropic 가격 ($/MTok). 모델 교체하면 함께 업데이트.
@@ -65,9 +65,9 @@ llm:
 
 prefilter:
   rsi_period: 14
-  rsi_buy_below: 40           # 횡보장에서 LLM 호출 자체가 0인 상황 완화 (35 → 40)
+  rsi_buy_below: 50           # 중립권까지 LLM 검토 — 횡보장 후보 0 해소 (40 → 50)
   rsi_sell_above: 65          # 매도 후보도 한 단계 완화 (70 → 65)
-  min_volume_ratio: 1.0       # 평균 거래량 이상이면 후보 인정 (1.2 → 1.0)
+  min_volume_ratio: 0.8       # 평균 미만 거래량도 후보 인정 (1.0 → 0.8)
   trend_filter_enabled: true  # 추세 필터: 현재가가 SMA 아래면 매수 후보 제외 (떨어지는 칼날 차단)
   trend_sma_period: 20        # 추세 판단용 이동평균선 기간 (일)
 
