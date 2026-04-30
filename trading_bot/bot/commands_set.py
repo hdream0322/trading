@@ -203,44 +203,36 @@ def _confirm_keyboard(key_path: str, value_str: str) -> dict[str, Any]:
 
 
 def _list_keys(ctx: BotContext) -> dict[str, Any]:
-    """편집 가능한 키 목록 + 현재값. 섹션별 그룹핑."""
-    groups: dict[str, list[str]] = {}
-    for path, spec in WHITELIST.items():
-        sec = spec.section or "_top"
-        if sec not in groups:
-            groups[sec] = []
-        current = _get_current_runtime(ctx, spec)
-        range_hint = ""
-        if spec.min is not None and spec.max is not None:
-            range_hint = f" _({spec.min}~{spec.max})_"
-        groups[sec].append(f"- `{path}` = `{current}`{range_hint}")
-
-    display_order = ["_top", "risk", "exit", "llm", "prefilter", "fundamentals"]
-    section_titles = {
-        "_top": "🔧 기본",
-        "risk": "🛡️ 리스크",
-        "exit": "💸 청산",
-        "llm": "🤖 AI",
-        "prefilter": "📋 프리필터",
-        "fundamentals": "📊 펀더멘털",
-    }
-
-    lines = [
-        "*⚙️ 편집 가능한 설정 키*",
-        "",
-        "_사용법: `/set <key> <value>`_",
-        "_예: `/set risk.daily_loss_limit_pct 5`_",
-        "",
+    """인자 없이 호출됐을 때 짧은 사용법 안내. 전체 키/값 확인은 /config 로 분리."""
+    common = [
+        "prefilter.rsi_buy_below",
+        "prefilter.min_volume_ratio",
+        "llm.confidence_threshold",
+        "risk.cooldown_minutes",
+        "risk.max_orders_per_day",
+        "exit.stop_loss_pct",
+        "exit.take_profit_pct",
     ]
-    for sec in display_order:
-        if sec not in groups:
+    sample_lines = []
+    for path in common:
+        spec = WHITELIST.get(path)
+        if not spec:
             continue
-        lines.append(f"*{section_titles[sec]}*")
-        lines.extend(groups[sec])
-        lines.append("")
-    lines.append("_확정 버튼 후에만 적용됩니다 (2단계)._")
-    lines.append("_파일 전체 보기: `/config raw`_")
-    return _reply("\n".join(lines))
+        current = _get_current_runtime(ctx, spec)
+        sample_lines.append(f"- `{path}` = `{current}`")
+
+    text = (
+        "*⚙️ 설정 변경 (/set)*\n\n"
+        "사용법:\n"
+        "`/set <key> <value>` — 확정 버튼 표시\n"
+        "`/set <key> <value> confirm` — 즉시 적용\n\n"
+        "예: `/set risk.cooldown_minutes 20`\n\n"
+        "*자주 쓰는 키*\n"
+        + "\n".join(sample_lines)
+        + f"\n\n_편집 가능 키 총 {len(WHITELIST)}개._\n"
+        "_전체 현재값은 `/config`, 원본 yaml 은 `/config raw` 로 확인._"
+    )
+    return _reply(text)
 
 
 def _get_current_runtime(ctx: BotContext, spec: Spec) -> Any:
