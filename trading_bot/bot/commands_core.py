@@ -9,7 +9,8 @@ from datetime import datetime
 from typing import Any
 
 from trading_bot import __version__ as bot_version
-from trading_bot.bot import quiet_mode, update_manager
+from trading_bot.bot import mode_switch, quiet_mode, update_manager
+from trading_bot.bot.commands_funda import is_enabled as _funda_is_enabled
 from trading_bot.bot.context import BotContext
 from trading_bot.bot.formatters import (
     confidence_pct,
@@ -54,6 +55,7 @@ HELP_TEXT = """*자동매매 봇 사용법*
 `/accuracy` — AI 판단 적중률 (사후 검증)
 `/cost` — 오늘 AI 분석 비용
 `/about` — 버전·업타임·전체 설정 요약
+`/logic` — 🧠 매매 로직 흐름 설명 (settings 값 반영)
 
 ━━━━━━━━━━━━━━━━━━━━
 *💸 수동 거래*
@@ -571,6 +573,123 @@ def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"*🔗 저장소*",
         f"• GitHub: github.com/hdream0322/trading",
         f"• 이미지: `ghcr.io/hdream0322/trading:latest`",
+    ]
+    return _reply("\n".join(lines))
+
+
+def cmd_logic(ctx: BotContext, args: list[str]) -> dict[str, Any]:
+    """현재 매매 로직을 settings 값 + 런타임 오버라이드 기반으로 흐름 순서대로 설명."""
+    s = ctx.settings
+    risk = s.risk or {}
+    exit_cfg = s.exit_rules or {}
+    llm_cfg = s.llm or {}
+    pf = s.prefilter or {}
+    funda = s.fundamentals or {}
+    rl = s.rate_limit or {}
+
+    badge = mode_badge(s.kis.mode)
+    override = mode_switch.read_override()
+    override_note = f" (오버라이드 적용: `{override}`)" if override else ""
+
+    kill_badge = "🛑 켜짐 — 신규 구매 차단" if kill_switch.is_active() else "✅ 꺼짐"
+    quiet_badge = "🔕 켜짐" if quiet_mode.is_active() else "✅ 꺼짐"
+    funda_on = _funda_is_enabled(funda)
+    funda_badge = "✅ 켜짐" if funda_on else "❌ 꺼짐"
+    auto_upd = "✅ 켜짐 (매일 02:00 KST)" if update_manager.is_auto_enabled() else "🛑 꺼짐"
+
+    try:
+        today_cost = repo.today_llm_cost_usd()
+    except Exception:
+        today_cost = 0.0
+
+    conf_pct = int(round(float(llm_cfg.get("confidence_threshold", 0.65)) * 100))
+    daily_cost_limit = float(llm_cfg.get("daily_cost_limit_usd", 3))
+
+    live_int = float(rl.get("live_min_interval_sec", 0.055) or 0.055)
+    paper_int = float(rl.get("paper_min_interval_sec", 0.55) or 0.55)
+    live_qps = 1.0 / live_int if live_int > 0 else 0.0
+    paper_qps = 1.0 / paper_int if paper_int > 0 else 0.0
+
+    trend_on = bool(pf.get("trend_filter_enabled", True))
+    trend_sma = pf.get("trend_sma_period", 20)
+    trend_line = (
+        f"현재가 > SMA{trend_sma} 만 매수 후보로 인정"
+        if trend_on
+        else "꺼짐 (떨어지는 칼날도 후보 가능)"
+    )
+
+    lines = [
+        "*🧠 매매 로직 한눈에 보기*",
+        "지금 봇이 어떤 순서·조건으로 사고파는지 보여드려요.",
+        "",
+        "*0️⃣ 사이클 시작 조건*",
+        f"• 평일 {s.market_open}~{s.market_close}, {s.cycle_minutes}분마다 자동 실행",
+        f"• 시세는 항상 실전 서버 (모의 시세 API 불안정)",
+        f"• 거래 모드: {badge}{override_note}",
+        f"• 긴급 정지: {kill_badge}",
+        f"• 조용 모드: {quiet_badge} (10분 요약만 토글, 거래·에러는 항상 알림)",
+        "",
+        "*1️⃣ Stage 0 — 보유 종목 자동 청산*",
+        "이미 가진 주식부터 기계 규칙으로 빠짐 (LLM 안 거침).",
+        f"• 🛡️ 손실 차단: 평균 구매가 대비 -{exit_cfg.get('stop_loss_pct', 5)}%",
+        f"• 🎯 이익 확정: 평균 구매가 대비 +{exit_cfg.get('take_profit_pct', 15)}%",
+        f"• 📉 트레일링: +{exit_cfg.get('trailing_activation_pct', 7)}% 도달 후 "
+        f"-{exit_cfg.get('trailing_distance_pct', 4)}% 빠지면 판매",
+        "• 09:00~09:10 / 15:20~15:30 신규 구매 차단 (변동성 회피, 청산은 가능)",
+        "",
+        "*2️⃣ Stage 1 — 룰베이스 사전필터*",
+        "LLM 호출 전에 후보부터 추림.",
+        f"• RSI < {pf.get('rsi_buy_below', 50)} → 구매 후보",
+        f"• RSI > {pf.get('rsi_sell_above', 65)} → 판매 후보",
+        f"• 거래량 ≥ 20일 평균 × {pf.get('min_volume_ratio', 0.8)}",
+        f"• 추세 필터: {trend_line}",
+        "",
+        "*3️⃣ AI 판단 (Claude)*",
+        "사전필터 통과 종목만 LLM 에 보냄.",
+        f"• 모델: `{llm_cfg.get('model', 'claude-haiku-4-5')}`",
+        f"• 확신도 ≥ {conf_pct}% 일 때만 진입",
+        f"• 일일 AI 비용 한도: ${daily_cost_limit:.2f} (오늘 ${today_cost:.4f})",
+        "• 사전필터의 매수/매도 방향은 LLM 에 안 알려줌 (확증 편향 차단)",
+        "• 사전필터 ≠ LLM 결정이면 reject",
+        "",
+        "*4️⃣ 안전장치 게이트 (이 순서로 통과해야 주문)*",
+        "1. 긴급 정지 (구매만 차단, 청산은 통과)",
+        f"2. 일일 주문 한도: {risk.get('max_orders_per_day', 6)}건 (청산 예외)",
+        f"3. 일일 손실 한도: -{risk.get('daily_loss_limit_pct', 3)}%",
+        f"4. 재거래 대기: 같은 종목 {risk.get('cooldown_minutes', 30)}분",
+        f"5. 동시 보유 최대: {risk.get('max_concurrent_positions', 5)}종목",
+        f"6. 종목당 비중 상한: {risk.get('max_position_per_symbol_pct', 19.5)}%",
+        f"7. 섹터 다양화: 섹터당 최대 {risk.get('max_per_sector', 2)}종목",
+        f"8. 펀더멘털 게이트: {funda_badge}",
+    ]
+
+    if funda_on:
+        lines.append(
+            f"   • PER ≤ {funda.get('max_per', 50)}, "
+            f"PBR ≤ {funda.get('max_pbr', 10)}, "
+            f"부채비율 ≤ {funda.get('max_debt_ratio', 300)}%, "
+            f"ROE ≥ {funda.get('min_roe', -5)}%"
+        )
+        lines.append("   • 데이터 없으면 통과 (장애로 매수 막힘 방지)")
+        lines.append("   • 매수만 차단, 매도는 허용")
+
+    lines += [
+        "",
+        "*5️⃣ 주문 → 체결 정합*",
+        "• 시장가 주문 (hashkey 자동 발급)",
+        f"• 유량 제한: 실전 ~{live_qps:.1f} req/s, 모의 ~{paper_qps:.1f} req/s",
+        "• \"초당 거래건수 초과\" 만 자동 재시도, 비즈니스 에러는 재시도 안 함",
+        "• 사이클 끝에 fill_tracker 가 KIS 조회로 체결 상태 정합",
+        "• 미체결 매수는 자동 취소, 미체결 매도(손절·청산)는 계속 대기",
+        "",
+        "*6️⃣ 사일런트 실패 방지*",
+        "• 5분마다 최근 1시간 에러 ≥ 10건 → 긴급 정지 자동 켜짐",
+        "• 자동 활성: 15분 + 최근 30분 에러 0건 → 자동 해제",
+        "• 수동 활성은 절대 자동 해제 안 함 (구조적 문제 가능성)",
+        "• 1시간 내 재활성 → 플래핑 판정, 수동만 가능",
+        f"• 자동 업데이트: {auto_upd}",
+        "",
+        "_값 변경: `/set` · 전체 설정: `/about` 또는 `/config`_",
     ]
     return _reply("\n".join(lines))
 
