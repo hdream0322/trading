@@ -214,7 +214,7 @@ def cmd_signals(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.execute(
-            """SELECT substr(ts, 12, 5), code, name, decision, confidence, substr(llm_reasoning, 1, 80)
+            """SELECT substr(ts, 12, 5), code, name, decision, confidence, llm_reasoning
                FROM signals
                WHERE substr(ts, 1, 10) = ?
                ORDER BY id DESC LIMIT 10""",
