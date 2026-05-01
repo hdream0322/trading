@@ -679,7 +679,7 @@ def cmd_logic(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         "• 시장가 주문 (hashkey 자동 발급)",
         f"• 유량 제한: 실전 ~{live_qps:.1f} req/s, 모의 ~{paper_qps:.1f} req/s",
         "• \"초당 거래건수 초과\" 만 자동 재시도, 비즈니스 에러는 재시도 안 함",
-        "• 사이클 끝에 fill_tracker 가 KIS 조회로 체결 상태 정합",
+        "• 사이클 끝에 `fill_tracker` 가 KIS 조회로 체결 상태 정합",
         "• 미체결 매수는 자동 취소, 미체결 매도(손절·청산)는 계속 대기",
         "",
         "*6️⃣ 사일런트 실패 방지*",
@@ -689,7 +689,7 @@ def cmd_logic(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         "• 1시간 내 재활성 → 플래핑 판정, 수동만 가능",
         f"• 자동 업데이트: {auto_upd}",
         "",
-        "_값 변경: `/set` · 전체 설정: `/about` 또는 `/config`_",
+        "값 변경은 `/set`, 전체 설정은 `/about` 또는 `/config`",
     ]
     return _reply("\n".join(lines))
 
