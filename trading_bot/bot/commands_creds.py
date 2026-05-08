@@ -161,7 +161,9 @@ def cmd_setcreds(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     if not (40 <= len(app_secret) <= 256):
         return _reply(f"시크릿 길이 이상: {len(app_secret)}자 (보통 180자)")
     if not account.isdigit() or not (8 <= len(account) <= 10):
-        return _reply(f"계좌번호 형식 이상: `{account}` (8자리 숫자 예상)")
+        # 입력값 echo 금지 — 사용자가 시크릿을 계좌 자리에 잘못 넣어도
+        # 텔레그램 채팅에 평문 잔류 방지.
+        return _reply(f"계좌번호 형식 이상 ({len(account)}자, 숫자 8~10자리 예상)")
 
     # 기존 credentials.env 읽어서 병합 (다른 모드 키 보존)
     existing: dict[str, str] = {}

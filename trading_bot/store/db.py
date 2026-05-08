@@ -111,6 +111,15 @@ CREATE INDEX IF NOT EXISTS idx_cycle_runs_ts ON cycle_runs(ts);
 def init_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    # WAL: 동시 read/write 분리 — poller(텔레그램) 와 scheduler(사이클) 가
+    # 다른 스레드에서 동시 write 시 'database is locked' 빈발하던 문제 완화.
+    # busy_timeout: 잠시 대기 후 재시도 (즉시 OperationalError 회피).
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.DatabaseError as exc:
+        log.warning("PRAGMA 적용 실패 (계속 진행): %s", exc)
     conn.executescript(SCHEMA)
 
     # 기존 DB에 컬럼 없으면 추가 (stage 1 DB에서 stage 2로 올라올 때)

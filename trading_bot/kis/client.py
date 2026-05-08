@@ -466,8 +466,10 @@ class KisClient:
             try:
                 data = resp.json()
             except Exception:
+                # body 본문 노출 금지 — KIS 가 디버그 응답에 인증 정보를 echo 할
+                # 가능성 차단. errors 테이블/CSV export 로 흘러갈 수 있음.
                 raise RuntimeError(
-                    f"KIS 주문 응답 파싱 실패: status={resp.status_code} body={resp.text[:300]}"
+                    f"KIS 주문 응답 파싱 실패: status={resp.status_code}"
                 )
 
             if resp.status_code == 200 and data.get("rt_cd") == "0":
@@ -605,41 +607,57 @@ class KisClient:
             "QTY_ALL_ORD_YN": "Y",  # 잔량 전부 취소
         }
 
-        hashkey = self.get_hashkey(body)
-        self._throttle(cfg)
-        resp = self._trade_client.post(
-            "/uapi/domestic-stock/v1/trading/order-rvsecncl",
-            json=body,
-            headers={
-                "authorization": f"Bearer {get_access_token(cfg)}",
-                "appkey": cfg.app_key,
-                "appsecret": cfg.app_secret,
-                "tr_id": tr_id,
-                "custtype": "P",
-                "hashkey": hashkey,
-                "content-type": "application/json; charset=utf-8",
-            },
-        )
-        try:
-            data = resp.json()
-        except Exception:
-            raise RuntimeError(
-                f"KIS 취소 응답 파싱 실패: status={resp.status_code} body={resp.text[:300]}"
+        # place_market_order 와 동일한 정책: 게이트웨이 rate-limit 만 재시도.
+        # 취소는 주문 엔진 도달 전 거절이라 재시도 안전. 비즈니스 에러
+        # (이미 체결 / 잔량 부족 등) 는 재시도 금지.
+        max_retries = 3
+        last_err = ""
+        for attempt in range(1, max_retries + 1):
+            hashkey = self.get_hashkey(body)
+            self._throttle(cfg)
+            resp = self._trade_client.post(
+                "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+                json=body,
+                headers={
+                    "authorization": f"Bearer {get_access_token(cfg)}",
+                    "appkey": cfg.app_key,
+                    "appsecret": cfg.app_secret,
+                    "tr_id": tr_id,
+                    "custtype": "P",
+                    "hashkey": hashkey,
+                    "content-type": "application/json; charset=utf-8",
+                },
             )
+            try:
+                data = resp.json()
+            except Exception:
+                raise RuntimeError(
+                    f"KIS 취소 응답 파싱 실패: status={resp.status_code}"
+                )
 
-        if resp.status_code == 200 and data.get("rt_cd") == "0":
-            output = data.get("output") or {}
-            return {
-                "order_no": str(output.get("ODNO", "")),
-                "raw": data,
-            }
+            if resp.status_code == 200 and data.get("rt_cd") == "0":
+                output = data.get("output") or {}
+                return {
+                    "order_no": str(output.get("ODNO", "")),
+                    "raw": data,
+                }
 
-        msg = data.get("msg1", "")
-        msg_cd = data.get("msg_cd", "")
-        raise RuntimeError(
-            f"KIS 주문 취소 실패 ({order_no}): status={resp.status_code} "
-            f"msg_cd={msg_cd} msg1={msg}"
-        )
+            msg = data.get("msg1", "")
+            msg_cd = data.get("msg_cd", "")
+            last_err = f"status={resp.status_code} msg_cd={msg_cd} msg1={msg}"
+
+            is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
+            if is_rate_limit and attempt < max_retries:
+                wait = 0.5 * attempt
+                log.warning(
+                    "주문 취소 rate limit (%s), %.1fs 후 재시도 %d/%d",
+                    order_no, wait, attempt, max_retries,
+                )
+                time.sleep(wait)
+                continue
+            break
+
+        raise RuntimeError(f"KIS 주문 취소 실패 ({order_no}): {last_err}")
 
     @classmethod
     def from_settings(cls, settings: Any) -> "KisClient":

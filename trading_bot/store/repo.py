@@ -11,7 +11,14 @@ log = logging.getLogger(__name__)
 
 
 def _conn() -> sqlite3.Connection:
-    return sqlite3.connect(DB_PATH)
+    # busy_timeout 은 connection 단위 — 매번 fresh connection 이라 여기서 설정.
+    # WAL 모드는 DB 파일에 영속이므로 init_db 1회 적용으로 충분.
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.DatabaseError:
+        pass
+    return conn
 
 
 def insert_signal(
@@ -60,9 +67,9 @@ def insert_error(component: str, message: str, traceback: str | None = None) -> 
 
 
 def get_pending_orders_today() -> list[dict[str, Any]]:
-    """오늘 status='submitted' 이면서 kis_order_no 가 있는 주문들.
+    """오늘 미확정 (submitted / partial) 이면서 kis_order_no 가 있는 주문들.
 
-    체결 추적 잡이 확인해야 할 대상.
+    체결 추적 잡이 확인해야 할 대상. 부분 체결도 잔량 추적 위해 포함.
     """
     today = datetime.now().strftime("%Y-%m-%d")
     with _conn() as conn:
@@ -70,7 +77,7 @@ def get_pending_orders_today() -> list[dict[str, Any]]:
             """SELECT id, code, name, side, qty, kis_order_no
                  FROM orders
                 WHERE substr(ts, 1, 10) = ?
-                  AND status = 'submitted'
+                  AND status IN ('submitted', 'partial')
                   AND kis_order_no IS NOT NULL
                   AND kis_order_no != ''
                 ORDER BY id ASC""",

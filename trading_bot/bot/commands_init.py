@@ -413,8 +413,10 @@ def _validate_cred_field(field: str, value: str) -> str | None:
             return f"시크릿 길이 이상: {len(value)}자 (보통 180자)"
         return None
     if field == "account_no":
+        # 입력값은 절대 echo 하지 않음 — 사용자가 시크릿/계좌를 헷갈려
+        # 다른 필드에 붙여넣은 경우 텔레그램 채팅에 평문 잔류 방지.
         if not value.isdigit() or not (8 <= len(value) <= 10):
-            return f"계좌번호 형식 이상: `{value}` (8자리 숫자 예상)"
+            return f"계좌번호 형식 이상 ({len(value)}자, 숫자 8~10자리 예상)"
         return None
     return "알 수 없는 필드"
 
