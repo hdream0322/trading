@@ -76,6 +76,11 @@ WHITELIST: dict[str, Spec] = {
     "exit.trailing_distance_pct": Spec("exit", "trailing_distance_pct", float, "숫자(%)", "트레일링 낙폭", "exit_rules", 0.5, 50),
     "exit.atr_enabled": Spec("exit", "atr_enabled", _to_bool, "true/false", "ATR 동적 손절", "exit_rules"),
     "exit.atr_multiplier": Spec("exit", "atr_multiplier", float, "숫자", "ATR 배수", "exit_rules", 0.5, 5),
+    # 수수료 인지 청산 (Stage 12)
+    "fees.min_net_profit_pct": Spec("fees", "min_net_profit_pct", float, "숫자(%)", "트레일링 청산 최소 net 수익", "fees", 0.0, 5.0),
+    "fees.commission_per_side_pct": Spec("fees", "commission_per_side_pct", float, "숫자(%)", "위탁수수료 (편도)", "fees", 0.0, 1.0),
+    "fees.sell_tax_pct": Spec("fees", "sell_tax_pct", float, "숫자(%)", "증권거래세 (매도)", "fees", 0.0, 1.0),
+    "fees.slippage_per_side_pct": Spec("fees", "slippage_per_side_pct", float, "숫자(%)", "시장가 슬리피지 (편도)", "fees", 0.0, 1.0),
     # AI
     "llm.confidence_threshold": Spec("llm", "confidence_threshold", float, "0~1 실수", "AI 확신도 임계값", "llm", 0.0, 1.0),
     "llm.daily_cost_limit_usd": Spec("llm", "daily_cost_limit_usd", float, "숫자($)", "일일 AI 비용 한도", "llm", 0.0, 100.0),

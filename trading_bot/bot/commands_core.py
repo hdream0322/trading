@@ -78,6 +78,12 @@ HELP_TEXT = """*자동매매 봇 사용법*
 `/mode` — 현재 모드 + 전환 버튼
 `/mode paper` / `/mode live confirm` — 직접 전환
 
+*⚡ 거래 스타일 (단타/장기/기본)*
+`/style` — 현재 스타일 + 비교표 + 전환 버튼
+`/style scalp` — 단타 (짧은 손익절·잦은 진입, 수수료 가드 포함)
+`/style swing` — 장기 (보수적·긴 보유)
+`/style default` — 기본값 복귀
+
 *종목 관리*
 `/universe` — 추적 종목 목록
 `/universe add 005490` — 추가 (이름 확인 후 예/아니오)
@@ -145,8 +151,10 @@ def cmd_menu(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     kill_line = "🛑 *긴급 정지 켜짐*" if kill_active else "✅ 정상 운영 중"
     badge = mode_badge(ctx.settings.kis.mode)
     universe_count = len(ctx.settings.universe)
+    from trading_bot.bot.commands_style import style_label
+    style = style_label(ctx.settings.trade_style)
     text = (
-        f"*자동매매 봇* {badge}\n"
+        f"*자동매매 봇* {badge} · 스타일 {style}\n"
         f"{kill_line}\n"
         f"추적 중인 종목: {universe_count}개\n\n"
         f"_원하는 동작을 버튼으로 고르세요._"
@@ -513,6 +521,11 @@ def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     badge = mode_badge(s.kis.mode)
     quote_server = "실전 서버" if s.kis_quote.mode == "live" else "모의 서버"
     kill_badge = "🛑 켜짐" if kill_switch.is_active() else "✅ 꺼짐"
+    from trading_bot.bot.commands_style import style_label
+    from trading_bot.signals.exit_strategy import round_trip_cost_pct
+    fees_cfg = getattr(s, "fees", None) or {}
+    rt_cost = round_trip_cost_pct(fees_cfg)
+    min_net = float(fees_cfg.get("min_net_profit_pct", 0.0)) if fees_cfg else 0.0
 
     try:
         today_orders = repo.get_today_order_count()
@@ -539,6 +552,7 @@ def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"• 관심 종목: {len(s.universe)}개",
         f"• 점검 주기: {s.cycle_minutes}분",
         f"• 장 시간: {s.market_open} ~ {s.market_close}",
+        f"• 거래 스타일: {style_label(s.trade_style)} (`/style` 로 전환)",
         f"• 긴급 정지: {kill_badge}",
         "",
         f"*🤖 AI 판단*",
@@ -564,6 +578,7 @@ def cmd_about(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"• 🎯 이익 확정: +{exit_cfg.get('take_profit_pct', 15)}%",
         f"• 📉 트레일링 활성: +{exit_cfg.get('trailing_activation_pct', 7)}%",
         f"• 📉 트레일링 낙폭: -{exit_cfg.get('trailing_distance_pct', 4)}%",
+        f"• 💰 왕복 수수료: {rt_cost:.2f}% · 트레일링 가드 min net {min_net}%",
         "",
         f"*🔄 자동 업데이트*",
         (
@@ -608,6 +623,12 @@ def cmd_logic(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     conf_pct = int(round(float(llm_cfg.get("confidence_threshold", 0.65)) * 100))
     daily_cost_limit = float(llm_cfg.get("daily_cost_limit_usd", 3))
 
+    from trading_bot.bot.commands_style import style_label
+    from trading_bot.signals.exit_strategy import round_trip_cost_pct
+    fees_cfg = getattr(s, "fees", None) or {}
+    rt_cost = round_trip_cost_pct(fees_cfg)
+    min_net = float(fees_cfg.get("min_net_profit_pct", 0.0)) if fees_cfg else 0.0
+
     live_int = float(rl.get("live_min_interval_sec", 0.055) or 0.055)
     paper_int = float(rl.get("paper_min_interval_sec", 0.55) or 0.55)
     live_qps = 1.0 / live_int if live_int > 0 else 0.0
@@ -629,6 +650,7 @@ def cmd_logic(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"• 평일 {s.market_open}~{s.market_close}, {s.cycle_minutes}분마다 자동 실행",
         f"• 시세는 항상 실전 서버 (모의 시세 API 불안정)",
         f"• 거래 모드: {badge}{override_note}",
+        f"• 거래 스타일: {style_label(s.trade_style)} (`/style` 로 전환)",
         f"• 긴급 정지: {kill_badge}",
         f"• 조용 모드: {quiet_badge} (10분 요약만 토글, 거래·에러는 항상 알림)",
         "",
@@ -638,6 +660,8 @@ def cmd_logic(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"• 🎯 이익 확정: 평균 구매가 대비 +{exit_cfg.get('take_profit_pct', 15)}%",
         f"• 📉 트레일링: +{exit_cfg.get('trailing_activation_pct', 7)}% 도달 후 "
         f"-{exit_cfg.get('trailing_distance_pct', 4)}% 빠지면 판매",
+        f"• 💰 왕복 수수료 ≈ {rt_cost:.2f}% — 트레일링은 net 수익 ≥ {min_net}% "
+        f"여야 청산 (수수료 못 버는 청산 보류, 손절·고정 익절은 영향 없음)",
         "• 09:00~09:10 / 15:20~15:30 신규 구매 차단 (변동성 회피, 청산은 가능)",
         "",
         "*2️⃣ Stage 1 — 룰베이스 사전필터*",
