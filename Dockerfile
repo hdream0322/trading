@@ -17,13 +17,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir \
-        "httpx[http2]>=0.27" \
-        "pyyaml>=6.0" \
-        "python-dotenv>=1.0" \
-        "anthropic>=0.40" \
-        "apscheduler>=3.10,<4" \
-        "holidays>=0.50"
+# 의존성은 requirements.txt 의 명시적 핀으로 설치 → 매 빌드마다 PyPI 최신
+# patch 가 자동으로 끌려와 회귀/공급망 위험에 노출되던 문제 차단.
+# 갱신 시 로컬 venv 의 `pip freeze` 결과를 requirements.txt 에 반영.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY trading_bot/ ./trading_bot/
 COPY config/ ./config/

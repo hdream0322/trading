@@ -453,7 +453,10 @@ def cmd_cycle(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
     with ctx.trading_lock:
         try:
-            summary = run_cycle(ctx.settings, ctx.kis, ctx.llm, ctx.risk)
+            summary = run_cycle(
+                ctx.settings, ctx.kis, ctx.llm, ctx.risk,
+                trading_lock=ctx.trading_lock,
+            )
         except Exception as exc:
             log.exception("수동 점검 실행 실패")
             return _reply(f"❌ 점검 실행 중 오류\n`{exc}`")

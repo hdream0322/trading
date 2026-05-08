@@ -129,6 +129,7 @@ def run_cycle(
     kis: KisClient,
     llm: ClaudeSignalClient | None,
     risk: RiskManager,
+    trading_lock: Any | None = None,
 ) -> dict[str, Any]:
     """단일 시그널 사이클. 시그널 발효 시 리스크 게이트 통과하면 실제 주문까지 실행."""
     log.info("=== 사이클 시작 (mode=%s) ===", settings.kis.mode)
@@ -545,7 +546,24 @@ def run_cycle(
         if submitted_in_cycle > 0:
             import time as _time
             log.info("체결 확인 대기 중 — 30초…")
-            _time.sleep(30)
+            # 30초 동안 trading_lock 을 release — 텔레그램 /sell, /cycle, /status
+            # 등 동시 사용자 명령이 30초씩 멈추던 문제 해결. caller 가 락을 잡은
+            # 컨텍스트라도 안전하게 release/재획득 가능 (with 블록 종료 시 release
+            # 호출 카운트가 맞음). 단, 이 사이 다른 cycle_job 이 깨면 max_instances=1
+            # + coalesce 로 스킵되는 게 정상.
+            released = False
+            if trading_lock is not None:
+                try:
+                    trading_lock.release()
+                    released = True
+                except RuntimeError:
+                    # 이미 release 된 상태 — 그대로 sleep 만
+                    pass
+            try:
+                _time.sleep(30)
+            finally:
+                if released:
+                    trading_lock.acquire()
         from trading_bot.signals import fill_tracker
         fill_result = fill_tracker.reconcile_pending_orders(
             kis, telegram_cfg=settings.telegram,

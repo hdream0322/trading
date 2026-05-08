@@ -187,7 +187,10 @@ class ClaudeSignalClient:
             decision=str(tool_input["decision"]),
             confidence=float(tool_input["confidence"]),
             reasoning=str(tool_input["reasoning"]),
-            input_tokens=input_tokens + cache_creation + cache_read,
+            # 토큰 통계 — 캐시 read 는 신규 입력이 아니므로 합산 제외.
+            # cache_creation 은 처음 캐시에 올린 입력이라 합산 (실제 처리량).
+            # cost 는 위에서 이미 별도 단가로 정확히 계산됨.
+            input_tokens=input_tokens + cache_creation,
             output_tokens=output_tokens,
             model=self.model,
             cost_usd=cost,

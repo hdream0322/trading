@@ -51,7 +51,9 @@ PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
 - **Docker 명령은 sudo 필수** (DSM Container Manager 권한 분리). 예:
   `sudo docker compose up -d --force-recreate trading-bot`
 - **이미지 업데이트**는 Telegram `/update confirm` 으로 자동 처리 (Watchtower).
-  **compose/sysctls/volumes 변경**은 이미지에 안 담기므로 SSH 필요:
+  **compose/sysctls/volumes/services 변경**은 이미지에 안 담기므로 SSH 필요. 특히
+  `docker-socket-proxy` 서비스 추가 (Watchtower 권한 최소화) 처럼 새 컨테이너가
+  뜨는 변경이면 `sudo docker compose up -d` 로 전체 적용:
   ```bash
   cd /volume1/docker/trading
   sudo cp docker-compose.yml docker-compose.yml.bak

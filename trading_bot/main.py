@@ -53,10 +53,15 @@ def cycle_job(ctx: BotContext) -> None:
     if not is_market_open_now(ctx.settings.market_open, ctx.settings.market_close):
         log.info("장외 시간 — 사이클 스킵")
         return
-    # 자동 사이클과 수동 /sell 경합 방지
+    # 자동 사이클과 수동 /sell 경합 방지.
+    # trading_lock 을 run_cycle 에 넘겨 30초 체결 대기 동안만 임시 release
+    # → 그동안 텔레그램 명령이 락 대기 안 함.
     with ctx.trading_lock:
         try:
-            run_cycle(ctx.settings, ctx.kis, ctx.llm, ctx.risk)
+            run_cycle(
+                ctx.settings, ctx.kis, ctx.llm, ctx.risk,
+                trading_lock=ctx.trading_lock,
+            )
         except Exception:
             log.exception("사이클 실행 중 예외")
 
@@ -522,7 +527,7 @@ def main() -> int:
                 log.warning("장외 시간입니다. --force 로 강제 실행 가능합니다.")
                 return 0
             with ctx.trading_lock:
-                run_cycle(settings, kis, llm, risk)
+                run_cycle(settings, kis, llm, risk, trading_lock=ctx.trading_lock)
         finally:
             kis.close()
         return 0
