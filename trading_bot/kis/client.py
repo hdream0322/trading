@@ -268,10 +268,11 @@ class KisClient:
 
             if resp.status_code == 200 and body and body.get("rt_cd") == "0":
                 # output 은 분기/연간 리스트. 최신(첫 번째) 항목 사용.
+                # KIS 가 가끔 최신 회계연도에 빈/0 placeholder row 를 끼워넣어 보내서,
+                # 실제 데이터가 있는 항목을 찾을 때까지 순차 폴백한다.
                 output_list = body.get("output") or []
                 if not output_list:
                     raise RuntimeError(f"KIS 재무비율 데이터 없음 ({code})")
-                latest = output_list[0]
 
                 def _to_float(val: Any) -> float | None:
                     if val is None or str(val).strip() == "":
@@ -280,6 +281,18 @@ class KisClient:
                         return float(val)
                     except (ValueError, TypeError):
                         return None
+
+                # 핵심 지표(ROE/EPS/BPS/부채비율)가 모두 0 또는 None 이면 빈 항목으로 간주.
+                # PER/PBR/배당수익률은 종목 특성상 진짜 0/None 일 수 있어 판정에서 제외.
+                def _is_empty_row(row: dict[str, Any]) -> bool:
+                    keys = ("roe_val", "eps", "bps", "lblt_rate")
+                    vals = [_to_float(row.get(k)) for k in keys]
+                    return all(v is None or v == 0.0 for v in vals)
+
+                latest = next(
+                    (row for row in output_list if not _is_empty_row(row)),
+                    output_list[0],
+                )
 
                 return {
                     "per": _to_float(latest.get("per")),
