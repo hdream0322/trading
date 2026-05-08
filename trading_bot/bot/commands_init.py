@@ -650,7 +650,7 @@ def _step_finish() -> dict[str, Any]:
         "이제 봇이 10분 주기로 자동 점검을 돕기 시작해요.\n\n"
         "*자주 쓰는 커맨드*\n"
         "• `/status` — 지금 상태\n"
-        "• `/positions` — 내 주식\n"
+        "• `/positions` — 보유 주식\n"
         "• `/signals` — 오늘 판단 결과\n"
         "• `/stop` — 🛑 긴급 정지\n"
         "• `/menu` — 버튼 허브\n\n"

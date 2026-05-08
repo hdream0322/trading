@@ -831,5 +831,5 @@ def _notify_summary(
     telegram.send(
         settings.telegram,
         "\n".join(lines),
-        reply_markup=cycle_summary_keyboard(),
+        reply_markup=cycle_summary_keyboard(kill_switch.is_active()),
     )

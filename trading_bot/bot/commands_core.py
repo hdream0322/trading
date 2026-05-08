@@ -155,7 +155,7 @@ def cmd_status(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         f"긴급 정지: {kill_badge}",
         f"오늘 주문: {today_orders}건 / AI 분석 비용 ${daily_cost:.4f}",
     ]
-    return _reply("\n".join(lines), reply_markup=cycle_summary_keyboard())
+    return _reply("\n".join(lines), reply_markup=cycle_summary_keyboard(kill_active))
 
 
 def cmd_positions(ctx: BotContext, args: list[str]) -> dict[str, Any]:
@@ -228,8 +228,9 @@ def cmd_signals(ctx: BotContext, args: list[str]) -> dict[str, Any]:
             f"관망 {signal_summary['llm_hold']}"
         )
         if signal_summary["low_confidence"] > 0:
+            conf_pct = int(round(float(ctx.settings.llm.get("confidence_threshold", 0.75)) * 100))
             lines.append(
-                f"- 확신도 75% 미달로 주문까지 못 간 건 {signal_summary['low_confidence']}건"
+                f"- 확신도 {conf_pct}% 미달로 주문까지 못 간 건 {signal_summary['low_confidence']}건"
             )
 
     if risk_reasons:

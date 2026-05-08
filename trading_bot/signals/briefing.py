@@ -178,8 +178,9 @@ def send_close_briefing(settings: Settings, kis: KisClient) -> None:
             )
             lines.append(ai_line)
             if signal_summary["low_confidence"] > 0:
+                conf_pct = int(round(float(settings.llm.get("confidence_threshold", 0.75)) * 100))
                 lines.append(
-                    f"- 확신도 75% 미달로 주문까지 못 간 건 {signal_summary['low_confidence']}건"
+                    f"- 확신도 {conf_pct}% 미달로 주문까지 못 간 건 {signal_summary['low_confidence']}건"
                 )
         if risk_reasons:
             reasons_str = ", ".join(f"{k} {v}건" for k, v in risk_reasons)

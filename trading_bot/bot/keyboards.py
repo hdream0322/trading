@@ -17,16 +17,24 @@ def _reply(
     return out
 
 
-def cycle_summary_keyboard() -> dict[str, Any]:
-    """점검 결과 메시지 하단 퀵 액션 버튼."""
+def cycle_summary_keyboard(kill_active: bool = False) -> dict[str, Any]:
+    """점검 결과 메시지 하단 퀵 액션 버튼.
+
+    긴급 정지 상태에 따라 한 버튼만 토글로 표시.
+    """
+    kill_button = (
+        {"text": "✅ 긴급 정지 해제", "callback_data": "resume"}
+        if kill_active
+        else {"text": "🛑 긴급 정지", "callback_data": "kill"}
+    )
     return {
         "inline_keyboard": [
             [
-                {"text": "🛑 긴급 정지", "callback_data": "kill"},
-                {"text": "✅ 해제", "callback_data": "resume"},
+                kill_button,
+                {"text": "🤖 오늘 추천", "callback_data": "go:signals"},
             ],
             [
-                {"text": "📊 내 주식", "callback_data": "positions"},
+                {"text": "📊 보유 주식", "callback_data": "positions"},
                 {"text": "💰 상태", "callback_data": "status"},
             ],
             [
