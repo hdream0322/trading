@@ -131,11 +131,13 @@ def _reply_summary(ctx: BotContext) -> dict[str, Any]:
         ],
     }
 
+    from trading_bot.bot.commands_style import style_label
     lines = [
         "*⚙️ 설정 파일 진단*",
         "",
         f"📄 경로: `{SETTINGS_PATH}`",
         f"📏 크기: `{len(raw_text):,}` bytes",
+        f"⚡ 활성 스타일: {style_label(ctx.settings.trade_style)} — `/style` 로 전환",
         "",
     ]
 

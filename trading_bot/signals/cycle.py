@@ -625,7 +625,10 @@ def _run_exit_checks(
             except Exception as exc:
                 log.warning("%s ATR 조회 실패 — 고정 손절 사용: %s", code, exc)
 
-        decision = exit_strategy.check_exit(pos, state, exit_cfg, dynamic_stop_pct)
+        fees_cfg = getattr(settings, "fees", None) or {}
+        decision = exit_strategy.check_exit(
+            pos, state, exit_cfg, dynamic_stop_pct, fees=fees_cfg,
+        )
         if not decision.should_exit:
             continue
 

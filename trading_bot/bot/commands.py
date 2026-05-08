@@ -42,6 +42,7 @@ from trading_bot.bot.commands_funda import cmd_funda
 from trading_bot.bot.commands_init import cmd_init, handle_init_callback
 from trading_bot.bot.commands_logs import cmd_logs
 from trading_bot.bot.commands_mode import cmd_mode
+from trading_bot.bot.commands_style import cmd_style, handle_style_callback
 from trading_bot.bot.commands_universe import (
     _execute_universe_add,
     _execute_universe_remove,
@@ -80,6 +81,7 @@ TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
     ("accuracy", "AI 판단 적중률 (사후 검증)"),
     ("cost", "오늘 AI 분석 비용"),
     ("mode", "거래 모드 조회/전환 (실전/모의)"),
+    ("style", "⚡ 거래 스타일 (단타/장기/기본)"),
     ("universe", "추적 종목 목록/추가/제거"),
     ("about", "봇 버전 및 전체 설정"),
     ("logic", "🧠 매매 로직 흐름 설명 (settings 값 반영)"),
@@ -108,6 +110,7 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/about": cmd_about,
     "/logic": cmd_logic,
     "/mode": cmd_mode,
+    "/style": cmd_style,
     "/universe": cmd_universe,
     "/status": cmd_status,
     "/positions": cmd_positions,
@@ -216,6 +219,8 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         return handle_set_callback(ctx, data)
     if data.startswith("config:"):
         return handle_config_callback(ctx, data)
+    if data.startswith("style_to:"):
+        return handle_style_callback(ctx, data)
     return _reply(f"모르는 버튼: `{data}`")
 
 
@@ -255,6 +260,7 @@ __all__ = [
     "cmd_about",
     "cmd_logic",
     "cmd_mode",
+    "cmd_style",
     "cmd_universe",
     "cmd_update",
     "cmd_notes",

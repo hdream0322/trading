@@ -99,3 +99,61 @@ fundamentals:
   # 예시:
   #   구매 200,000원 → 214,000원(+7%) 기록 → 현재 205,440원(+2.7%, 고점 대비 -4%)
   #   → 트레일링 발동, 전량 판매
+
+# Stage 12: 매매 비용 (왕복 수수료 + 거래세 + 슬리피지)
+# 수수료 못 버는 청산을 막기 위한 가드 + 손익률 표시에 net 손익을 함께 노출.
+# 2026 기준 한국 주식 기본값:
+#   - 위탁수수료 (KIS 온라인): 매수 0.015% + 매도 0.015%
+#   - 증권거래세 (매도): 코스피·코스닥 0.20% (코스피=0.05% + 농특세 0.15%)
+#   - 시장가 슬리피지: 1~2틱 ≈ 매수 0.05% + 매도 0.05%
+# 왕복 비용 = 0.015*2 + 0.20 + 0.05*2 ≈ 0.33%
+fees:
+  commission_per_side_pct: 0.015   # 위탁수수료 (매수·매도 각각, %)
+  sell_tax_pct: 0.20               # 증권거래세 + 농특세 (매도만, %)
+  slippage_per_side_pct: 0.05      # 시장가 슬리피지 (매수·매도 각각, %)
+  # 트레일링 청산이 트리거돼도 net pnl (수수료 차감) 이 이 값 미만이면 청산 보류.
+  # 단타에서 +0.5% 익절 같은 본전 청산을 막기 위함. 손절·고정익절은 영향 없음.
+  min_net_profit_pct: 0.30         # 트레일링 청산 시 최소 net 수익 (%)
+
+# Stage 11: 거래 스타일 프리셋 (단타 / 장기 / 기본)
+# 활성 스타일은 data/trade_mode 파일에 저장돼 컨테이너 재시작·이미지 업데이트에도 유지된다.
+# 텔레그램 `/style scalp|swing|default` 로 즉시 토글 가능. default 는 위 prefilter/risk/exit/llm
+# 기본값을 그대로 사용하며 (현재 완화된 값 = 기본 모드), scalp/swing 은 아래 키들로 위 섹션을
+# 인메모리 오버라이드. 보유 종목 청산 룰도 즉시 새 폭으로 평가됨 (사용자 합의 2026-04-30).
+trade_modes:
+  scalp:
+    description: "단타 — 짧은 손익절 + 잦은 진입 (도파민 모드)"
+    prefilter:
+      rsi_buy_below: 55
+      rsi_sell_above: 60
+      min_volume_ratio: 0.6
+      trend_filter_enabled: false   # 추세 필터 끔 — 횡보·역추세 진입 허용
+    risk:
+      cooldown_minutes: 10
+      max_orders_per_day: 20
+    exit:
+      stop_loss_pct: 2.5
+      take_profit_pct: 4
+      # 트레일링 활성 3% / 낙폭 1% — 최악 +2% gross → 수수료(~0.33%) 후 +1.7% net 보장.
+      # 활성 2% + 낙폭 1.5% 면 +0.5% 청산 시 수수료 못 벌어 본전 → 활성을 더 보수적으로.
+      trailing_activation_pct: 3
+      trailing_distance_pct: 1
+    llm:
+      confidence_threshold: 0.60
+  swing:
+    description: "장기 — 보수적 진입 + 긴 보유"
+    prefilter:
+      rsi_buy_below: 35
+      rsi_sell_above: 75
+      min_volume_ratio: 1.2
+      trend_filter_enabled: true
+    risk:
+      cooldown_minutes: 240
+      max_orders_per_day: 3
+    exit:
+      stop_loss_pct: 8
+      take_profit_pct: 25
+      trailing_activation_pct: 12
+      trailing_distance_pct: 6
+    llm:
+      confidence_threshold: 0.80

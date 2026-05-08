@@ -89,6 +89,9 @@ class Settings:
     exit_rules: dict[str, Any]   # Stage 6: 손절/익절/트레일링 스톱
     rate_limit: dict[str, Any]   # KIS API throttle 간격 (초) — live/paper 별
     fundamentals: dict[str, Any]  # Stage 10: 펀더멘털 리스크 게이트 설정
+    trade_style: str             # Stage 11: default | scalp | swing (data/trade_mode 영속화)
+    trade_modes: dict[str, Any]  # 프리셋 원본 (UI 비교 표시용)
+    fees: dict[str, Any]         # Stage 12: 왕복 수수료/거래세/슬리피지 + min_net_profit 가드
 
 
 def _require(name: str) -> str:
@@ -198,6 +201,12 @@ def load_settings() -> Settings:
         raise RuntimeError(f"설정 파일 없음: {settings_path}")
     raw = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
 
+    # Stage 11: 거래 스타일 프리셋 적용 — data/trade_mode 가 있으면 prefilter/risk/exit/llm
+    # 키를 인메모리로 오버라이드. 순환 import 방지를 위해 함수 내부에서 import.
+    from trading_bot.bot.style_switch import apply_style, read_style
+    trade_style = read_style()
+    apply_style(trade_style, raw)
+
     # 자격증명 오버라이드 파일이 있으면 먼저 로드 (docker env_file 값 덮어쓰기)
     load_credentials_override()
 
@@ -272,4 +281,7 @@ def load_settings() -> Settings:
         exit_rules=raw.get("exit", {}),
         rate_limit=raw.get("rate_limit", {}),
         fundamentals=raw.get("fundamentals", {}),
+        trade_style=trade_style,
+        trade_modes=raw.get("trade_modes", {}) or {},
+        fees=raw.get("fees", {}) or {},
     )

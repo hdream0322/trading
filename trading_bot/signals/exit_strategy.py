@@ -15,9 +15,27 @@ class ExitDecision:
     should_exit: bool
     tag: str          # "stop_loss" | "take_profit" | "trailing_stop" | ""
     reason: str       # 사용자에게 보여줄 설명 (쉬운 한국어)
-    pnl_pct: float    # 현재 손익률
+    pnl_pct: float    # 현재 손익률 (gross %)
     entry_price: float
     current_price: float
+
+
+def round_trip_cost_pct(fees: dict[str, Any] | None) -> float:
+    """매수 + 매도 왕복 비용 (%, 수수료 + 거래세 + 슬리피지).
+
+    fees=None 또는 키 없음이면 0 — 폴백 동작은 기존 (수수료 미반영) 그대로.
+    """
+    if not fees:
+        return 0.0
+    commission = float(fees.get("commission_per_side_pct", 0)) * 2
+    sell_tax = float(fees.get("sell_tax_pct", 0))
+    slippage = float(fees.get("slippage_per_side_pct", 0)) * 2
+    return commission + sell_tax + slippage
+
+
+def net_pnl_pct(gross_pnl_pct: float, fees: dict[str, Any] | None) -> float:
+    """gross 손익률에서 왕복 비용 차감한 net 손익률 (%)."""
+    return gross_pnl_pct - round_trip_cost_pct(fees)
 
 
 def sync_position_state(
@@ -66,17 +84,22 @@ def check_exit(
     state: dict[str, Any],
     config: dict[str, Any],
     dynamic_stop_loss_pct: float | None = None,
+    fees: dict[str, Any] | None = None,
 ) -> ExitDecision:
     """단일 포지션에 대한 청산 여부 판단.
 
     세 가지 기계적 규칙:
     1. 손실 차단 (stop loss): 손익률 <= -stop_loss_pct
     2. 이익 확정 (take profit): 손익률 >= take_profit_pct
-    3. 고점 대비 하락 (trailing stop): 최고점 대비 trailing_distance_pct 하락
+    3. 고점 대비 하락 (trailing stop): 최고점 대비 trailing_distance_pct 하락 +
+       net pnl (수수료 차감) >= fees.min_net_profit_pct 가드
 
     트레일링 스톱은 손익률이 trailing_activation_pct 를 한 번이라도 넘은 이후에만 동작.
+    수수료 못 버는 트레일링 청산을 막기 위해 net pnl 가드를 추가 — 스톱로스/익절은
+    영향 없음 (손절은 어차피 손실 인정, 고정 익절은 임계값을 사용자가 정함).
 
     dynamic_stop_loss_pct 가 주어지면 고정 stop_loss_pct 대신 사용 (ATR 기반 동적 손절).
+    fees=None 이면 수수료 미반영 (기존 동작).
     """
     cur = float(pos["cur_price"])
     entry = float(state.get("entry_price") or pos["avg_price"])
@@ -96,12 +119,16 @@ def check_exit(
     trailing_activation_pct = float(config.get("trailing_activation_pct", 7))
     trailing_distance_pct = float(config.get("trailing_distance_pct", 4))
 
+    rt_cost = round_trip_cost_pct(fees)
+    net_pct = pnl_pct - rt_cost
+    net_suffix = f" · 수수료 후 {net_pct:+.2f}%" if rt_cost > 0 else ""
+
     # 1. 손실 차단
     if pnl_pct <= -stop_loss_pct:
         return ExitDecision(
             True,
             "stop_loss",
-            f"🛡️ 손실 차단: {name} {pnl_pct:+.2f}% (기준 -{stop_loss_pct:.1f}%)",
+            f"🛡️ 손실 차단: {name} {pnl_pct:+.2f}% (기준 -{stop_loss_pct:.1f}%){net_suffix}",
             pnl_pct, entry, cur,
         )
 
@@ -110,7 +137,7 @@ def check_exit(
         return ExitDecision(
             True,
             "take_profit",
-            f"🎯 이익 확정: {name} {pnl_pct:+.2f}% (기준 +{take_profit_pct:.1f}%)",
+            f"🎯 이익 확정: {name} {pnl_pct:+.2f}% (기준 +{take_profit_pct:.1f}%){net_suffix}",
             pnl_pct, entry, cur,
         )
 
@@ -121,6 +148,16 @@ def check_exit(
         # 최고점 대비 현재가 낙폭
         drop_from_hwm = (cur - hwm) / hwm * 100
         if drop_from_hwm <= -trailing_distance_pct:
+            # 수수료 가드 — net pnl 이 min_net_profit_pct 미만이면 청산 보류 (재상승 대기).
+            # rt_cost==0 (fees 미설정) 이면 가드 미동작 → 기존 동작.
+            min_net = float((fees or {}).get("min_net_profit_pct", 0.0))
+            if rt_cost > 0 and net_pct < min_net:
+                log.info(
+                    "트레일링 청산 보류 (수수료 못 김): %s gross=%+.2f%% net=%+.2f%% "
+                    "min_net=%.2f%%",
+                    name, pnl_pct, net_pct, min_net,
+                )
+                return ExitDecision(False, "", "", pnl_pct, entry, cur)
             return ExitDecision(
                 True,
                 "trailing_stop",
@@ -128,6 +165,7 @@ def check_exit(
                     f"📉 고점 대비 하락: {name} "
                     f"최고 +{hwm_pnl_pct:.1f}% → 현재 {pnl_pct:+.2f}% "
                     f"(고점 대비 {drop_from_hwm:.2f}%, 기준 -{trailing_distance_pct:.1f}%)"
+                    f"{net_suffix}"
                 ),
                 pnl_pct, entry, cur,
             )

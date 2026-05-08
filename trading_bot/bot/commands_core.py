@@ -175,8 +175,11 @@ def cmd_status(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         today_orders = 0
 
     badge = mode_badge(ctx.settings.kis.mode)
+    from trading_bot.bot.commands_style import style_label
+    style_line = f"스타일: {style_label(ctx.settings.trade_style)} — `/style` 로 전환"
     lines = [
         f"*지금 상태* {badge} — {datetime.now():%Y-%m-%d %H:%M}",
+        style_line,
         f"총 자산: `{fmt_won(bs.get('tot_evlu_amt'))}`",
         f"쓸 수 있는 현금: `{fmt_won(bs.get('dnca_tot_amt'))}`",
         f"어제 대비: `{fmt_pct(bs.get('asst_icdc_erng_rt'))}`",
