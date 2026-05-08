@@ -93,28 +93,81 @@ def _mode_live_confirm_keyboard() -> dict[str, Any]:
 
 
 def _menu_keyboard(kill_active: bool) -> dict[str, Any]:
-    """/menu 허브 버튼."""
-    third_row = (
-        [{"text": "✅ 긴급정지 풀기", "callback_data": "resume"},
-         {"text": "ℹ️ 사용법", "callback_data": "help"}]
+    """/menu 메인 허브 — 5개 카테고리로 묶음."""
+    safety_btn = (
+        {"text": "🛡️ 안전 (정지 풀기)", "callback_data": "hub:safety"}
         if kill_active
-        else
-        [{"text": "🛑 긴급 정지", "callback_data": "kill"},
-         {"text": "ℹ️ 사용법", "callback_data": "help"}]
+        else {"text": "🛡️ 안전", "callback_data": "hub:safety"}
     )
     return {
         "inline_keyboard": [
             [
-                {"text": "💰 상태", "callback_data": "status"},
-                {"text": "📊 내 주식", "callback_data": "positions"},
+                {"text": "📊 현황", "callback_data": "hub:status"},
+                {"text": "💸 거래", "callback_data": "hub:trade"},
             ],
             [
-                {"text": "🌐 종목 목록", "callback_data": "universe_list"},
-                {"text": "🔄 지금 점검", "callback_data": "cycle_run"},
+                {"text": "⚙️ 설정", "callback_data": "hub:settings"},
+                safety_btn,
             ],
-            third_row,
+            [
+                {"text": "🔄 운영·도구", "callback_data": "hub:ops"},
+                {"text": "ℹ️ 사용법", "callback_data": "help"},
+            ],
         ]
     }
+
+
+def hub_section_keyboard(section: str, kill_active: bool = False) -> dict[str, Any]:
+    """카테고리 sub-menu — 각 항목이 실제 커맨드로 deep-link, 마지막 줄 '🏠 처음으로'."""
+    rows: list[list[dict[str, str]]]
+    if section == "status":
+        rows = [
+            [{"text": "💰 계좌 상태", "callback_data": "status"},
+             {"text": "📈 보유 종목", "callback_data": "positions"}],
+            [{"text": "🤖 오늘 추천", "callback_data": "go:signals"},
+             {"text": "✅ AI 적중률", "callback_data": "go:accuracy"}],
+            [{"text": "💵 AI 비용", "callback_data": "go:cost"},
+             {"text": "📋 봇 정보", "callback_data": "go:about"}],
+            [{"text": "🧠 매매 로직", "callback_data": "go:logic"}],
+        ]
+    elif section == "trade":
+        rows = [
+            [{"text": "🔄 지금 점검", "callback_data": "cycle_run"}],
+            [{"text": "💸 종목 판매", "callback_data": "go:sell"},
+             {"text": "🌐 추적 종목", "callback_data": "universe_list"}],
+            [{"text": "📊 펀더멘털 게이트", "callback_data": "go:funda"}],
+        ]
+    elif section == "settings":
+        rows = [
+            [{"text": "⚡ 거래 스타일", "callback_data": "go:style"},
+             {"text": "🟡 거래 모드", "callback_data": "go:mode"}],
+            [{"text": "📐 설정 진단", "callback_data": "go:config"},
+             {"text": "🛠️ 값 변경", "callback_data": "go:set"}],
+        ]
+    elif section == "safety":
+        toggle_kill = (
+            {"text": "✅ 긴급정지 풀기", "callback_data": "resume"}
+            if kill_active
+            else {"text": "🛑 긴급 정지", "callback_data": "kill"}
+        )
+        rows = [
+            [toggle_kill],
+            [{"text": "🔕 조용 모드", "callback_data": "go:quiet"}],
+            [{"text": "🔄 컨테이너 재시작", "callback_data": "go:restart"},
+             {"text": "🔁 자격증명 재로드", "callback_data": "go:reload"}],
+        ]
+    elif section == "ops":
+        rows = [
+            [{"text": "⬆️ 업데이트 확인", "callback_data": "go:update"}],
+            [{"text": "📤 내보내기", "callback_data": "go:export"},
+             {"text": "📋 로그 보기", "callback_data": "go:logs"}],
+            [{"text": "🔑 자격증명 교체", "callback_data": "go:setcreds"}],
+            [{"text": "🚀 첫 설치 마법사", "callback_data": "go:init"}],
+        ]
+    else:
+        rows = []
+    rows.append([{"text": "🏠 처음으로", "callback_data": "hub:main"}])
+    return {"inline_keyboard": rows}
 
 
 def _sell_confirm_keyboard(code: str, name: str, qty: int) -> dict[str, Any]:

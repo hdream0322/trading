@@ -73,33 +73,17 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 TELEGRAM_BOT_COMMANDS: list[tuple[str, str]] = [
-    ("menu", "메인 메뉴 (버튼 허브)"),
-    ("help", "사용법 보기"),
-    ("status", "지금 상태 (자산·킬스위치·비용)"),
-    ("positions", "갖고 있는 주식"),
-    ("signals", "오늘 매매 추천 (최근 10개)"),
-    ("accuracy", "AI 판단 적중률 (사후 검증)"),
-    ("cost", "오늘 AI 분석 비용"),
-    ("mode", "거래 모드 조회/전환 (실전/모의)"),
+    # 자동완성에는 핵심 9개만 노출 — 나머지는 /menu 의 카테고리 버튼으로 자연스럽게 탐색.
+    # 모든 커맨드는 COMMAND_MAP 에 그대로 살아있어서 직접 입력하면 동작함.
+    ("menu", "🏠 메인 허브 (모든 기능을 버튼으로)"),
+    ("status", "💰 지금 상태 (자산·킬·비용)"),
+    ("positions", "📈 갖고 있는 주식"),
+    ("cycle", "🔄 지금 바로 점검 실행"),
     ("style", "⚡ 거래 스타일 (단타/장기/기본)"),
-    ("universe", "추적 종목 목록/추가/제거"),
-    ("about", "봇 버전 및 전체 설정"),
-    ("logic", "🧠 매매 로직 흐름 설명 (settings 값 반영)"),
-    ("stop", "🛑 긴급 정지 (새로 구매 차단)"),
+    ("mode", "🟡 거래 모드 (모의/실전)"),
+    ("stop", "🛑 긴급 정지"),
     ("resume", "✅ 긴급 정지 풀기"),
-    ("quiet", "🔕 조용 모드 토글 (10분 사이클 요약 끔)"),
-    ("sell", "특정 종목 전부 팔기 (확인 필요)"),
-    ("cycle", "지금 바로 점검 실행"),
-    ("update", "최신 버전 확인"),
-    ("setcreds", "텔레그램으로 앱키 직접 교체"),
-    ("reload", "자격증명 재로드 (파일 수정 후)"),
-    ("restart", "컨테이너 완전 재시작"),
-    ("funda", "종목 재무지표 조회/게이트 켜기·끄기"),
-    ("export", "📤 데이터 내보내기 (CSV/DB 파일 전송)"),
-    ("logs", "📋 서버 로그 조회 (텍스트/파일)"),
-    ("init", "🚀 첫 설치자용 설정 마법사"),
-    ("config", "⚙️ 설정 파일 진단/확인"),
-    ("set", "⚙️ 설정값 변경 (화이트리스트 키)"),
+    ("help", "ℹ️ 사용법 (전체 커맨드)"),
 ]
 
 
@@ -168,6 +152,13 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         return cmd_universe(ctx, [])
     if data == "cycle_run":
         return cmd_cycle(ctx, [])
+    # 메뉴 허브 카테고리 진입
+    if data.startswith("hub:"):
+        return _show_hub(ctx, data.split(":", 1)[1])
+    # 카테고리 안에서 실제 커맨드로 deep-link (인자 없이 기본 응답)
+    if data.startswith("go:"):
+        target = data.split(":", 1)[1]
+        return _go_to_command(ctx, target)
     if data.startswith("sell_select:"):
         code = data.split(":", 1)[1]
         return _sell_select(ctx, code)
@@ -222,6 +213,79 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
     if data.startswith("style_to:"):
         return handle_style_callback(ctx, data)
     return _reply(f"모르는 버튼: `{data}`")
+
+
+# ─────────────────────────────────────────────────────────────
+# 메뉴 허브 — 카테고리 5개로 묶어 자연스러운 탐색 제공
+# ─────────────────────────────────────────────────────────────
+
+_HUB_SECTIONS: dict[str, tuple[str, str]] = {
+    "status": (
+        "📊 *현황*",
+        "지금 봇이 어떻게 돌아가는지 — 계좌·보유·추천·비용·로직.",
+    ),
+    "trade": (
+        "💸 *거래*",
+        "수동 거래 + 추적 종목 + 펀더멘털 게이트.",
+    ),
+    "settings": (
+        "⚙️ *설정*",
+        "거래 스타일·모드·임계값. 단타/장기 토글은 여기서.",
+    ),
+    "safety": (
+        "🛡️ *안전*",
+        "긴급 정지·조용 모드·재시작·자격증명 재로드.",
+    ),
+    "ops": (
+        "🔄 *운영·도구*",
+        "업데이트·내보내기·로그·자격증명 교체·첫 설치 마법사.",
+    ),
+}
+
+
+def _show_hub(ctx: BotContext, section: str) -> dict[str, Any]:
+    from trading_bot.risk import kill_switch
+    from trading_bot.bot.keyboards import hub_section_keyboard
+
+    if section == "main":
+        return cmd_menu(ctx, [])
+    spec = _HUB_SECTIONS.get(section)
+    if spec is None:
+        return _reply(f"❌ 모르는 카테고리: `{section}`")
+    title, hint = spec
+    text = f"{title}\n{hint}\n\n_원하는 항목을 누르세요. '🏠 처음으로' 로 메인으로._"
+    return _reply(text, reply_markup=hub_section_keyboard(section, kill_switch.is_active()))
+
+
+# go:<cmd> → 인자 없이 해당 커맨드 호출 (자연스러운 다음 단계로 이동).
+_GO_HANDLERS: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
+    "signals": cmd_signals,
+    "accuracy": cmd_accuracy,
+    "cost": cmd_cost,
+    "about": cmd_about,
+    "logic": cmd_logic,
+    "sell": cmd_sell,
+    "funda": cmd_funda,
+    "style": cmd_style,
+    "mode": cmd_mode,
+    "config": cmd_config,
+    "set": cmd_set,
+    "quiet": cmd_quiet,
+    "restart": cmd_restart,
+    "reload": cmd_reload,
+    "update": cmd_update,
+    "export": cmd_export,
+    "logs": cmd_logs,
+    "setcreds": cmd_setcreds,
+    "init": cmd_init,
+}
+
+
+def _go_to_command(ctx: BotContext, target: str) -> dict[str, Any]:
+    handler = _GO_HANDLERS.get(target)
+    if handler is None:
+        return _reply(f"❌ 연결되지 않은 항목: `{target}`")
+    return handler(ctx, [])
 
 
 # ─────────────────────────────────────────────────────────────

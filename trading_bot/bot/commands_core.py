@@ -39,105 +39,64 @@ log = logging.getLogger(__name__)
 
 HELP_TEXT = """*자동매매 봇 사용법*
 
-━━━━━━━━━━━━━━━━━━━━
-*🏠 시작 · 허브*
-━━━━━━━━━━━━━━━━━━━━
-`/init` — 🚀 첫 설치 마법사 (처음 한 번, 버튼으로 단계별)
-`/menu` — 메인 메뉴 (자주 쓰는 기능을 버튼으로)
-`/help` — 이 도움말
+대부분의 기능은 `/menu` 한 번이면 버튼으로 다 닿습니다.
+아래는 직접 입력하고 싶을 때 참고용 — 카테고리 5개로 정리.
 
 ━━━━━━━━━━━━━━━━━━━━
-*📊 지금 상태 · 조회*
+*📊 현황*
 ━━━━━━━━━━━━━━━━━━━━
-`/status` — 총자산·예수금·긴급정지·오늘 비용
-`/positions` — 갖고 있는 주식 (판매 버튼 포함)
-`/signals` — 오늘 매매 추천 (최근 10개)
-`/accuracy` — AI 판단 적중률 (사후 검증)
-`/cost` — 오늘 AI 분석 비용
-`/about` — 버전·업타임·전체 설정 요약
-`/logic` — 🧠 매매 로직 흐름 설명 (settings 값 반영)
+`/status` 자산·킬·비용 한눈에
+`/positions` 보유 종목 (판매 버튼)
+`/signals` 오늘 추천 최근 10개
+`/accuracy` AI 적중률 사후 검증
+`/cost` 오늘 AI 분석 비용
+`/about` 버전·전체 설정 요약
+`/logic` 매매 로직 흐름
 
 ━━━━━━━━━━━━━━━━━━━━
-*💸 수동 거래*
+*💸 거래*
 ━━━━━━━━━━━━━━━━━━━━
-`/sell` — 보유 종목 선택해 판매
-`/sell 005930` — 코드 직접 지정 판매
-`/cycle` — 지금 바로 점검 한 번 실행
+`/cycle` 지금 점검 1회 실행
+`/sell` 보유 종목 판매 (버튼 선택)
+`/sell 005930` 코드 직접 지정
+`/universe` 추적 종목 목록·추가·제거
+`/funda 005930` 종목 재무지표
+`/funda enable` / `disable` 펀더멘털 게이트 토글
 
 ━━━━━━━━━━━━━━━━━━━━
-*🛑 안전장치*
+*⚙️ 설정*
 ━━━━━━━━━━━━━━━━━━━━
-`/stop` — 🛑 긴급 정지 (새로 구매 차단)
-`/resume` — ✅ 긴급 정지 풀기
-`/quiet` — 🔕 조용 모드 (10분 요약 끔, 거래/에러는 그대로)
-
-━━━━━━━━━━━━━━━━━━━━
-*⚙️ 설정 변경*
-━━━━━━━━━━━━━━━━━━━━
-*거래 모드*
-`/mode` — 현재 모드 + 전환 버튼
-`/mode paper` / `/mode live confirm` — 직접 전환
-
-*⚡ 거래 스타일 (단타/장기/기본)*
-`/style` — 현재 스타일 + 비교표 + 전환 버튼
-`/style scalp` — 단타 (짧은 손익절·잦은 진입, 수수료 가드 포함)
-`/style swing` — 장기 (보수적·긴 보유)
-`/style default` — 기본값 복귀
-
-*종목 관리*
-`/universe` — 추적 종목 목록
-`/universe add 005490` — 추가 (이름 확인 후 예/아니오)
-`/universe remove` — 제거 (버튼 선택)
-`/universe remove 005490` — 코드 직접 지정 제거
-
-*수치 조정 (settings.yaml)*
-`/config` — 설정 파일 진단 (누락 키 체크)
-`/config raw` / `/config file` — 원본 텍스트/첨부
-`/config reset` — ♻️ 기본값으로 한 방에 되돌리기 (확정 버튼)
-`/set` — 편집 가능 키 목록 + 현재값 + 범위
-`/set risk.daily_loss_limit_pct 5` — 값 변경 (확정 버튼)
-
-*펀더멘털 게이트*
-`/funda 005930` — 종목 재무지표 (PER/PBR/ROE/부채비율)
-`/funda enable` / `/funda disable` — 게이트 토글
+`/style` ⚡ 거래 스타일 비교표 + 버튼
+`/style scalp` / `swing` / `default` 즉시 전환
+`/mode` 거래 모드 (모의/실전)
+`/mode paper` / `/mode live confirm`
+`/config` 설정 파일 진단
+`/config reset` 기본값 복원
+`/set` 편집 가능 키 목록
+`/set risk.daily_loss_limit_pct 5` 값 변경
 
 ━━━━━━━━━━━━━━━━━━━━
-*📋 로그 · 데이터 내보내기*
+*🛡️ 안전*
 ━━━━━━━━━━━━━━━━━━━━
-`/logs` — 최근 30줄
-`/logs 100` — 최근 100줄 (길면 파일 전환)
-`/logs error` — 최근 ERROR/WARNING 30건
-`/logs file` — 오늘 로그 파일 다운로드
-`/logs file 2026-04-12` — 특정 날짜 파일
-
-`/export` — 📤 CSV 내보내기 메뉴
-`/export signals` — 오늘 점검 전체 (RSI/거래량/판정)
-`/export nearmiss` — 1차 통과 직전 TOP20
-`/export orders 7` — 최근 7일 주문
-`/export errors 3` — 최근 3일 에러
-`/export db` — DB 파일 통째로 (50MB 미만)
+`/stop` 🛑 긴급 정지 (새 구매 차단)
+`/resume` ✅ 긴급 정지 풀기
+`/quiet` 🔕 조용 모드 (10분 요약 끔)
+`/restart` 컨테이너 완전 재시작
+`/reload` 자격증명 파일 재로드
 
 ━━━━━━━━━━━━━━━━━━━━
-*🔄 업데이트 · 재시작*
+*🔄 운영·도구*
 ━━━━━━━━━━━━━━━━━━━━
-`/update` — 최신 버전 확인
-`/update confirm` — 실제 업데이트 실행
-`/update enable` / `/update disable` — 자동 업데이트 토글 (매일 02:00)
-`/update status` — 자동 업데이트 상태
-
-`/reload` — 자격증명 파일 재로드 (키 교체 후)
-`/restart` — 컨테이너 완전 재시작 (강력 재초기화)
-
-━━━━━━━━━━━━━━━━━━━━
-*🔑 자격증명*
-━━━━━━━━━━━━━━━━━━━━
-`/setcreds` — 앱키/시크릿/계좌번호 교체 (3개월 갱신 시)
-_(`/init` 안에서도 대화형 입력 가능)_
+`/update` 최신 버전 확인 / `confirm` 실행
+`/update enable` / `disable` 자동 업데이트
+`/export` 📤 CSV·DB 내보내기 메뉴
+`/logs` 최근 로그 / `logs error` / `logs file`
+`/setcreds` 앱키·시크릿 교체 (3개월 갱신)
+`/init` 🚀 첫 설치 마법사
 
 ━━━━━━━━━━━━━━━━━━━━
-_매 10분마다 봇이 관심 종목을 점검합니다._
-_조건 충족 시 AI가 판단해 자동 주문._
-_모든 매매는 안전장치 8단계를 거칩니다._
+_매 10분마다 관심 종목을 점검 → 1차 필터 → AI 판단 → 안전장치 8단계 → 시장가 주문._
+_단타로 더 자주 거래하고 싶으면 `/style scalp`._
 """
 
 
@@ -146,7 +105,7 @@ def cmd_help(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 
 def cmd_menu(ctx: BotContext, args: list[str]) -> dict[str, Any]:
-    """자주 쓰는 기능을 버튼 하나로 모은 허브 화면."""
+    """버튼 허브의 메인 — 5개 카테고리로 묶어 모든 기능에 닿게 함."""
     kill_active = kill_switch.is_active()
     kill_line = "🛑 *긴급 정지 켜짐*" if kill_active else "✅ 정상 운영 중"
     badge = mode_badge(ctx.settings.kis.mode)
@@ -155,9 +114,10 @@ def cmd_menu(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     style = style_label(ctx.settings.trade_style)
     text = (
         f"*자동매매 봇* {badge} · 스타일 {style}\n"
-        f"{kill_line}\n"
-        f"추적 중인 종목: {universe_count}개\n\n"
-        f"_원하는 동작을 버튼으로 고르세요._"
+        f"{kill_line} · 추적 {universe_count}종목\n\n"
+        "*카테고리를 골라 들어가세요.*\n"
+        "📊 현황 · 💸 거래 · ⚙️ 설정 · 🛡️ 안전 · 🔄 운영·도구\n\n"
+        "_직접 입력은 `/help` 의 카테고리별 목록 참고._"
     )
     return _reply(text, reply_markup=_menu_keyboard(kill_active))
 
