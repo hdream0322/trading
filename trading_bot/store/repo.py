@@ -164,6 +164,24 @@ def get_last_order_ts(code: str) -> str | None:
         return row[0] if row else None
 
 
+def get_last_stop_loss_ts(code: str) -> str | None:
+    """같은 종목의 마지막 손절(stop_loss) 청산 ts. 손절 직후 재매수 차단용.
+
+    cycle.py 가 청산 주문에 reason='exit (stop_loss): ...' 형식으로 기록함.
+    체결 여부와 무관하게 청산 시도 자체를 기준 — 미체결 손절도 "탈출 의사" 로
+    보고 cooldown 적용. trailing_stop/take_profit 는 제외 (이익 청산).
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT ts FROM orders "
+            "WHERE code = ? AND side = 'sell' AND reason LIKE 'exit (stop_loss):%' "
+            "ORDER BY id DESC LIMIT 1",
+            (code,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
 def get_today_order_count() -> int:
     today = datetime.now().strftime("%Y-%m-%d")
     with _conn() as conn:
@@ -291,7 +309,9 @@ def get_today_risk_rejection_reasons() -> list[tuple[str, int]]:
 
 def _bucket_risk_reason(reason: str) -> str:
     r = reason or ""
-    if "쿨다운" in r or "cooldown" in r.lower():
+    if "손절 직후" in r:
+        return "손절 후 재매수 금지"
+    if "쿨다운" in r or "cooldown" in r.lower() or "재거래 대기" in r:
         return "쿨다운"
     if "킬스위치" in r or "킬 스위치" in r or "kill" in r.lower():
         return "긴급 정지"

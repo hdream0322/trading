@@ -86,7 +86,8 @@ def _show_current(ctx: BotContext) -> dict[str, Any]:
         f"• 거래량 최소: `{s.prefilter.get('min_volume_ratio')}x`",
         f"• 추세 필터: `{'켜짐' if s.prefilter.get('trend_filter_enabled') else '꺼짐'}`",
         f"• 확신도: `{s.llm.get('confidence_threshold')}`",
-        f"• 재거래 대기: `{s.risk.get('cooldown_minutes')}분`",
+        f"• 재거래 대기: `{s.risk.get('cooldown_minutes')}분`"
+        f" · 손절 후 재매수: `{s.risk.get('post_stop_loss_cooldown_min', 0)}분`",
         f"• 일일 주문 한도: `{s.risk.get('max_orders_per_day')}건`",
         f"• 손절/익절: `{sl}%` / `{tp}%` (수수료 후 `{sl + rt:.2f}%` / `{tp - rt:.2f}%`)",
         f"• 트레일링 활성/낙폭: `{ta}%` / `{td}%` "

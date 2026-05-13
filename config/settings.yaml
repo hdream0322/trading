@@ -51,6 +51,9 @@ risk:
   max_per_sector: 2                  # 동일 섹터(업종) 최대 보유 종목 수 (분산 강화)
   daily_loss_limit_pct: 3           # 전일 대비 이만큼 손실 시 신규 매수 차단
   cooldown_minutes: 30              # 같은 종목 재진입까지 최소 대기 (60 → 30 거래 활성화)
+  # 손절 직후 같은 종목 재매수 금지 (분). 일반 cooldown 보다 길게 — 손절 의미 보존.
+  # 0 이면 비활성. trailing_stop/take_profit 는 해당 없음 (loss-cutting 청산만 적용).
+  post_stop_loss_cooldown_min: 60
   max_orders_per_day: 6             # 일일 총 주문 건수 상한
 
 llm:
@@ -130,6 +133,7 @@ trade_modes:
       trend_filter_enabled: false   # 추세 필터 끔 — 횡보·역추세 진입 허용
     risk:
       cooldown_minutes: 10
+      post_stop_loss_cooldown_min: 30
       max_orders_per_day: 20
     exit:
       stop_loss_pct: 2.5
@@ -149,6 +153,7 @@ trade_modes:
       trend_filter_enabled: true
     risk:
       cooldown_minutes: 240
+      post_stop_loss_cooldown_min: 240
       max_orders_per_day: 3
     exit:
       stop_loss_pct: 8

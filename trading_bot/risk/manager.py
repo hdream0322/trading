@@ -29,6 +29,7 @@ class RiskManager:
         self.max_per_sector = int(risk.get("max_per_sector", 2))
         self.daily_loss_limit_pct = float(risk.get("daily_loss_limit_pct", 3))
         self.cooldown_minutes = int(risk.get("cooldown_minutes", 30))
+        self.post_stop_loss_cooldown_min = int(risk.get("post_stop_loss_cooldown_min", 0))
         self.max_orders_per_day = int(risk.get("max_orders_per_day", 10))
         # Stage 10: 펀더멘털 게이트
         funda = getattr(settings, "fundamentals", None) or {}
@@ -101,6 +102,25 @@ class RiskManager:
                     )
             except ValueError:
                 pass
+
+        # 4b. 손절 직후 재매수 금지 (buy 만, 같은 종목)
+        # 손절 후 N분 내 재매수는 손절 의미를 무효화하고 왕복 수수료만 발생.
+        # trailing_stop/take_profit 는 이익 청산이라 제외 — stop_loss 만 적용.
+        if side == "buy" and self.post_stop_loss_cooldown_min > 0:
+            last_sl_ts = repo.get_last_stop_loss_ts(code)
+            if last_sl_ts:
+                try:
+                    sl_elapsed_min = (
+                        datetime.now() - datetime.fromisoformat(last_sl_ts)
+                    ).total_seconds() / 60
+                    if sl_elapsed_min < self.post_stop_loss_cooldown_min:
+                        return RiskDecision(
+                            False,
+                            f"손절 직후 재매수 금지 ({sl_elapsed_min:.0f}/"
+                            f"{self.post_stop_loss_cooldown_min}분)",
+                        )
+                except ValueError:
+                    pass
 
         # 5. 판매 경로: 실제 보유 중인지 확인
         if side == "sell":
