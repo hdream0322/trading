@@ -82,31 +82,31 @@ def main() -> None:
 
     # 정상 데이터 → 통과
     normal = {"per": 12.0, "pbr": 1.5, "roe": 15.0, "debt_ratio": 80.0}
-    r = risk._check_fundamentals(normal)
+    r = risk.check_fundamentals(normal)
     print(f"  정상 데이터: {r}  {'✅' if r is None else '❌'}")
 
     # PER 초과 → 차단
     high_per = {"per": 100.0, "pbr": 1.5, "roe": 15.0, "debt_ratio": 80.0}
-    r = risk._check_fundamentals(high_per)
+    r = risk.check_fundamentals(high_per)
     print(f"  PER 100: {r}  {'✅' if r and 'PER' in r else '❌'}")
 
     # 적자 기업 (PER < 0)
     neg_per = {"per": -5.0, "pbr": 1.5, "roe": 15.0, "debt_ratio": 80.0}
-    r = risk._check_fundamentals(neg_per)
+    r = risk.check_fundamentals(neg_per)
     print(f"  PER -5: {r}  {'✅' if r and '적자' in r else '❌'}")
 
     # 부채비율 초과 → 차단
     high_debt = {"per": 12.0, "pbr": 1.5, "roe": 15.0, "debt_ratio": 500.0}
-    r = risk._check_fundamentals(high_debt)
+    r = risk.check_fundamentals(high_debt)
     print(f"  부채 500%: {r}  {'✅' if r and '부채' in r else '❌'}")
 
     # ROE 부진 → 차단
     low_roe = {"per": 12.0, "pbr": 1.5, "roe": -10.0, "debt_ratio": 80.0}
-    r = risk._check_fundamentals(low_roe)
+    r = risk.check_fundamentals(low_roe)
     print(f"  ROE -10%: {r}  {'✅' if r and 'ROE' in r else '❌'}")
 
     # None 데이터 → 통과 (데이터 없음 ≠ 차단)
-    r = risk._check_fundamentals({"per": None, "pbr": None, "roe": None, "debt_ratio": None})
+    r = risk.check_fundamentals({"per": None, "pbr": None, "roe": None, "debt_ratio": None})
     print(f"  전부 None: {r}  {'✅' if r is None else '❌'}")
 
     # fundamentals=None → 게이트 우회

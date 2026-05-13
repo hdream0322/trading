@@ -157,7 +157,7 @@ class RiskManager:
         # 매도는 허용 (이미 보유한 부실 종목은 빠져나와야 함)
         # 데이터 없음(캐시 미스) → 차단하지 않음 (연동 장애 방지)
         if self.funda_enabled and fundamentals:
-            funda_reason = self._check_fundamentals(fundamentals)
+            funda_reason = self.check_fundamentals(fundamentals)
             if funda_reason:
                 return RiskDecision(False, funda_reason)
 
@@ -185,10 +185,12 @@ class RiskManager:
             qty=qty,
         )
 
-    def _check_fundamentals(self, f: dict[str, Any]) -> str | None:
+    def check_fundamentals(self, f: dict[str, Any]) -> str | None:
         """재무지표 임계값 검사. 위반 시 차단 사유 문자열, 통과 시 None.
 
         개별 지표가 None 이면 해당 검사를 스킵한다 (데이터 없음 ≠ 차단).
+        cycle 에서 LLM 호출 전 사전차단(precheck) 용으로도 사용 — 펀더멘털
+        결격 종목에 LLM 비용 태우는 낭비 방지.
         """
         per = f.get("per")
         if per is not None:

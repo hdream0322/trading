@@ -366,6 +366,24 @@ def run_cycle(
                 except ValueError:
                     pass
 
+            # 펀더멘털 프리체크 — buy 후보가 펀더멘털 게이트에서 어차피 차단될
+            # 종목이면 LLM 호출 자체를 생략. 한전(부채율 417%) 같은 케이스에서
+            # 사이클당 $0.003 안팎 낭비를 막는다. sell/hold 시그널은 LLM 이
+            # 다르게 판단할 수 있으니 buy 만 적용.
+            if (
+                candidate.side_hint == "buy"
+                and risk.funda_enabled
+                and funda_cached is not None
+            ):
+                funda_reject = risk.check_fundamentals(funda_cached.__dict__)
+                if funda_reject:
+                    log.info(
+                        "%s %s 펀더멘털 사전차단 — LLM 호출 생략: %s",
+                        code, name, funda_reject,
+                    )
+                    summary["hold"] += 1
+                    continue
+
             decision = llm.decide(features, ohlcv)
             daily_cost += decision.cost_usd
             summary["cost_usd"] += decision.cost_usd
