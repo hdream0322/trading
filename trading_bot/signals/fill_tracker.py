@@ -54,6 +54,32 @@ def _notify_fill(
         log.exception("체결 알림 전송 실패")
 
 
+def _guess_cancel_reason(
+    kis: KisClient,
+    code: str,
+    name: str,
+    order_price: int | None,
+) -> str:
+    """미체결 자동 취소 사유 추정 — 현재가 vs 주문 당시가 비교."""
+    base = "시장가 주문이지만 호가 부족·상한가·거래정지 등으로 30초 내 체결 실패. 다음 사이클에서 재판단합니다."
+    if not order_price or order_price <= 0:
+        return base
+    try:
+        price_data = kis.get_price(code)
+        cur_price = int(float(price_data.get("stck_prpr") or 0))
+        if cur_price <= 0:
+            return base
+        gap_pct = (cur_price - order_price) / order_price * 100
+        sign = "+" if gap_pct >= 0 else ""
+        return (
+            f"호가 부족 추정 (주문 당시 {_fmt_won(order_price)} → 현재 {_fmt_won(cur_price)}, "
+            f"{sign}{gap_pct:.1f}%)"
+        )
+    except Exception:
+        log.debug("미체결 사유 추정 위한 시세 조회 실패 [%s]", code)
+        return base
+
+
 def reconcile_pending_orders(
     kis: KisClient,
     auto_cancel_unfilled_buys: bool = True,
@@ -70,7 +96,7 @@ def reconcile_pending_orders(
 
     auto_cancel_unfilled_buys=True 면 미체결 매수를 KIS cancel_order 로 취소.
 
-    반환: {filled, partial, cancelled, auto_cancelled, checked, errors} 카운트
+    반환: {filled, partial, cancelled, auto_cancelled, checked, errors, unconfirmed} 카운트
     """
     result = {
         "filled": 0,
@@ -79,6 +105,7 @@ def reconcile_pending_orders(
         "auto_cancelled": 0,
         "checked": 0,
         "errors": 0,
+        "unconfirmed": 0,
     }
     pending = repo.get_pending_orders_today()
     if not pending:
@@ -88,8 +115,19 @@ def reconcile_pending_orders(
         # 주문번호를 안 주면 오늘 전체가 와서 한 번의 호출로 모두 매칭 가능
         rows = kis.inquire_daily_ccld(order_no=None)
     except Exception:
+        n = len(pending)
         log.exception("체결 조회 실패 — 체결 추적 스킵")
-        result["errors"] = len(pending)
+        result["errors"] = n
+        result["unconfirmed"] = n
+        # [C6] 체결 추적 실패 시 텔레그램 알림
+        if telegram_cfg is not None:
+            try:
+                telegram.send(
+                    telegram_cfg,
+                    f"🚨 *체결 확인 실패* — {n}건 미확인. 다음 점검에서 재시도.",
+                )
+            except Exception:
+                log.exception("체결 확인 실패 알림 전송 실패")
         return result
 
     by_odno: dict[str, dict[str, Any]] = {}
@@ -119,6 +157,8 @@ def reconcile_pending_orders(
             continue
 
         side = str(p.get("side") or "").lower()
+        # 이전 상태 확인 (부분→완전 체결 전이 감지용)
+        prev_status = str(p.get("status") or "submitted").lower()
 
         if cncl_yn == "Y" and tot_ccld == 0:
             repo.update_order_status(
@@ -144,9 +184,13 @@ def reconcile_pending_orders(
             result["filled"] += 1
             log.info("주문 체결 확인 [%s %s] %s @ %s원",
                      p["code"], p["name"], odno, avg_price)
+            # [C8] 부분→완전 체결 전이 시 잔량 완료 명시
+            extra_reason: str | None = None
+            if prev_status == "partial":
+                extra_reason = f"잔량 {tot_ccld}주까지 체결 완료 (총 {ord_qty}주)"
             _notify_fill(
                 telegram_cfg, side, p["code"], p["name"], tot_ccld,
-                avg_price, "filled",
+                avg_price, "filled", extra_reason,
             )
             continue
 
@@ -183,19 +227,24 @@ def reconcile_pending_orders(
                     krx_fwdg_ord_orgno=krx_fwdg_orgno,
                     qty=max(cancel_qty, 1),
                 )
+                # [A2] 미체결 사유 추정 — 현재가 vs 주문가 비교
+                order_price = int(p.get("price") or 0)
+                cancel_reason = _guess_cancel_reason(
+                    kis, p["code"], p["name"], order_price if order_price > 0 else None
+                )
                 repo.update_order_status(
                     order_id=p["id"],
                     status="cancelled",
-                    reason="30초 내 미체결 — 자동 취소",
+                    reason=f"30초 내 미체결 — 자동 취소",
                 )
                 result["auto_cancelled"] += 1
                 log.warning(
-                    "미체결 매수 자동 취소 [%s %s] %s (잔량 %d주)",
-                    p["code"], p["name"], odno, cancel_qty,
+                    "미체결 매수 자동 취소 [%s %s] %s (잔량 %d주) 사유: %s",
+                    p["code"], p["name"], odno, cancel_qty, cancel_reason,
                 )
                 _notify_fill(
                     telegram_cfg, side, p["code"], p["name"], cancel_qty,
-                    None, "cancelled", "30초 내 미체결 — 자동 취소",
+                    None, "cancelled", cancel_reason,
                 )
             except Exception as exc:
                 log.exception(

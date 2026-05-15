@@ -75,7 +75,7 @@ def get_pending_orders_today() -> list[dict[str, Any]]:
     today = datetime.now().strftime("%Y-%m-%d")
     with _conn() as conn:
         cur = conn.execute(
-            """SELECT id, code, name, side, qty, kis_order_no
+            """SELECT id, code, name, side, qty, kis_order_no, price, status
                  FROM orders
                 WHERE substr(ts, 1, 10) = ?
                   AND status IN ('submitted', 'partial')
@@ -92,6 +92,8 @@ def get_pending_orders_today() -> list[dict[str, Any]]:
                 "side": r[3],
                 "qty": int(r[4] or 0),
                 "kis_order_no": r[5],
+                "price": int(r[6] or 0) if r[6] is not None else 0,
+                "status": r[7],
             }
             for r in cur.fetchall()
         ]
@@ -393,7 +395,7 @@ def get_recent_pnl_daily(days: int = 7) -> list[dict[str, Any]]:
 def get_all_position_states() -> dict[str, dict[str, object]]:
     with _conn() as conn:
         cur = conn.execute(
-            "SELECT code, name, entry_ts, entry_price, high_water_mark, trailing_active FROM position_state"
+            "SELECT code, name, entry_ts, entry_price, high_water_mark, trailing_active, cost_basis FROM position_state"
         )
         result: dict[str, dict[str, object]] = {}
         for row in cur.fetchall():
@@ -404,6 +406,7 @@ def get_all_position_states() -> dict[str, dict[str, object]]:
                 "entry_price": float(row[3]),
                 "high_water_mark": float(row[4]),
                 "trailing_active": bool(row[5]),
+                "cost_basis": float(row[6]) if row[6] is not None else float(row[3]),
             }
         return result
 
@@ -415,13 +418,15 @@ def insert_position_state(
     entry_price: float,
     high_water_mark: float,
     trailing_active: bool = False,
+    cost_basis: float | None = None,
 ) -> None:
     with _conn() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO position_state
-               (code, name, entry_ts, entry_price, high_water_mark, trailing_active)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (code, name, entry_ts, entry_price, high_water_mark, 1 if trailing_active else 0),
+               (code, name, entry_ts, entry_price, high_water_mark, trailing_active, cost_basis)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (code, name, entry_ts, entry_price, high_water_mark, 1 if trailing_active else 0,
+             cost_basis if cost_basis is not None else entry_price),
         )
 
 
@@ -430,6 +435,15 @@ def update_position_hwm(code: str, high_water_mark: float, trailing_active: bool
         conn.execute(
             "UPDATE position_state SET high_water_mark = ?, trailing_active = ? WHERE code = ?",
             (high_water_mark, 1 if trailing_active else 0, code),
+        )
+
+
+def update_position_cost_basis(code: str, cost_basis: float) -> None:
+    """추가매수로 KIS 평단가 변경 시 cost_basis 만 갱신 (entry_price·hwm 불변)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE position_state SET cost_basis = ? WHERE code = ?",
+            (cost_basis, code),
         )
 
 
