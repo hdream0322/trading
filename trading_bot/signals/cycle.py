@@ -19,6 +19,7 @@ from trading_bot.bot import commands_init
 from trading_bot.config import Settings, is_init_completed
 from trading_bot.kis.client import KisClient
 from trading_bot.notify import telegram
+from trading_bot.notify.markdown_escape import escape_markdown
 from trading_bot.risk import kill_switch
 from trading_bot.risk.manager import RiskDecision, RiskManager
 from trading_bot.signals import cost_alert, exit_constants, exit_strategy, fundamentals, indicators, prefilter
@@ -193,6 +194,7 @@ def run_cycle(
     summary: dict[str, Any] = {
         "total": 0, "candidates": 0,
         "buy": 0, "sell": 0, "hold": 0, "errors_in_cycle": 0,
+        "llm_failed": 0,
         "cost_usd": 0.0,
         "orders_submitted": 0, "orders_rejected_by_risk": 0,
         "exits_executed": 0,
@@ -442,6 +444,9 @@ def run_cycle(
             try:
                 decision = llm.decide(features, ohlcv)
             except Exception as llm_exc:
+                # LLM 실패 종목이 buy/sell/hold 어디에도 안 잡혀 사용자가 보는
+                # 요약에서 "종목 N개 사라짐" 현상이 생기지 않도록 별도 카운터.
+                summary["llm_failed"] += 1
                 label, hint, fatal = _classify_llm_error(llm_exc)
                 if not llm_alerted:
                     llm_alerted = True
@@ -473,6 +478,19 @@ def run_cycle(
             daily_cost += decision.cost_usd
             summary["cost_usd"] += decision.cost_usd
             cost_alert.maybe_warn(daily_cost, daily_warn, daily_limit, settings.telegram)
+
+            # LLM 스키마 위반 — hold 폴백 처리됐으나 사용자에게 1회 알림.
+            if decision.schema_violation and not llm_alerted:
+                llm_alerted = True
+                try:
+                    telegram.send(
+                        settings.telegram,
+                        f"⚠️ *AI 응답 스키마 위반* — 안전하게 hold 로 처리했습니다.\n"
+                        f"종목: `{code}` {name}\n"
+                        f"근거: {decision.reasoning}",
+                    )
+                except Exception:
+                    log.exception("LLM 스키마 위반 텔레그램 알림 실패")
 
             # 교차검증 태그 — prefilter 와 LLM 의 독립 판단이 엇갈린 경우를
             # DB(llm_reasoning) 에 태그로 남겨 사후 분석 가능하게 한다.
@@ -662,11 +680,32 @@ def run_cycle(
                 except RuntimeError:
                     # 이미 release 된 상태 — 그대로 sleep 만
                     pass
+            lock_reacquired = True
             try:
                 _time.sleep(30)
             finally:
                 if released:
-                    trading_lock.acquire()
+                    # threading.Lock.acquire 는 다른 스레드가 30초간 잡고 있으면
+                    # 무한 대기 → with 블록 종료 시 RuntimeError 로 전파될 수 있다.
+                    # 타임아웃 acquire 로 끊고, 실패 시 텔레그램 경고 + 사이클 abort.
+                    lock_reacquired = trading_lock.acquire(timeout=60)
+            if not lock_reacquired:
+                log.error(
+                    "trading_lock 60초 내 재획득 실패 — 사이클 abort"
+                )
+                try:
+                    telegram.send(
+                        settings.telegram,
+                        "🚨 *내부 락 재획득 실패*\n"
+                        "체결 확인 대기 후 거래 락을 다시 잡지 못했습니다. "
+                        "이번 사이클을 중단합니다. 같은 증상이 반복되면 "
+                        "`/restart` 로 컨테이너를 재시작하세요.",
+                    )
+                except Exception:
+                    log.exception("락 재획득 실패 알림 전송 실패")
+                # 사이클 abort — 요약 전송도 생략 (락 미보유 상태에서
+                # 추가 작업을 하지 않는다)
+                return summary
         from trading_bot.signals import fill_tracker
         fill_result = fill_tracker.reconcile_pending_orders(
             kis, telegram_cfg=settings.telegram,
@@ -713,6 +752,8 @@ def _run_exit_checks(
     반환: 실행된 청산 이벤트 목록 (텔레그램 요약 용도)
     """
     events: list[dict[str, Any]] = []
+    # 이번 사이클에서 시세 조회 실패 경고를 이미 보낸 종목 (종목당 1회 dedup)
+    stale_warn_sent: set[str] = set()
 
     # 1. position_state 동기화 — 신규/제거된 포지션 반영
     states = exit_strategy.sync_position_state(holdings, _now_iso())
@@ -728,8 +769,48 @@ def _run_exit_checks(
             log.warning("%s: state 동기화 누락, 스킵", code)
             continue
 
+        # cur_price 가 0/음수면 잔고 응답이 stale 한 경우 — 청산 판단 자체가
+        # 망가지므로 fresh quote 1회 재조회. 실패 시 텔레그램 경고 (종목당 1회)
+        # + 해당 종목 청산 보류로 진행.
+        try:
+            cur_price_val = float(pos.get("cur_price") or 0)
+        except (TypeError, ValueError):
+            cur_price_val = 0.0
+        if cur_price_val <= 0:
+            refreshed_price = 0.0
+            try:
+                refreshed = kis.get_price(code)
+                refreshed_price = float(refreshed.get("prpr") or 0)
+            except Exception as exc:
+                log.warning("%s 시세 재조회 실패: %s", code, exc)
+                refreshed_price = 0.0
+            if refreshed_price > 0:
+                pos["cur_price"] = refreshed_price
+                cur_price_val = refreshed_price
+                log.info("%s stale 시세 복구: %.0f원", code, refreshed_price)
+            else:
+                if code not in stale_warn_sent:
+                    stale_warn_sent.add(code)
+                    name_safe = escape_markdown(str(pos.get("name", "")))
+                    try:
+                        telegram.send(
+                            settings.telegram,
+                            f"🚨 `{code}` {name_safe} 시세 조회 실패 — 청산 보류",
+                        )
+                    except Exception:
+                        log.exception("stale price 경고 전송 실패")
+                    try:
+                        repo.insert_error(
+                            component="exit",
+                            message=f"{code} {pos.get('name', '')} stale price (cur_price<=0) → 청산 보류",
+                            traceback="",
+                        )
+                    except Exception:
+                        log.exception("stale price 에러 기록 실패")
+                continue
+
         new_hwm, new_trailing = exit_strategy.update_high_water_mark(
-            code, state, float(pos["cur_price"]), exit_cfg,
+            code, state, cur_price_val, exit_cfg,
         )
         # state 로컬에도 반영 (check_exit 에서 참조)
         state["high_water_mark"] = new_hwm
@@ -847,6 +928,11 @@ def _notify_summary(
         return
 
     badge = mode_badge(settings.kis.mode)
+    extra_status: list[str] = []
+    if summary.get("llm_failed", 0):
+        extra_status.append(f"AI 실패 {summary['llm_failed']}개")
+    extra_line = (" · " + " · ".join(extra_status)) if extra_status else ""
+
     lines = [
         f"*점검 결과* {badge} — {datetime.now():%Y-%m-%d %H:%M}",
         "",
@@ -856,7 +942,7 @@ def _notify_summary(
         f"어제 대비 {fmt_pct(balance_summary.get('asst_icdc_erng_rt'))}",
         "",
         "*🔍 점검*",
-        f"종목 {summary['total']}개 · 후보 {summary['candidates']}개 · 오류 {summary['errors_in_cycle']}개",
+        f"종목 {summary['total']}개 · 후보 {summary['candidates']}개 · 오류 {summary['errors_in_cycle']}개{extra_line}",
         f"판단: 구매 {summary['buy']} · 판매 {summary['sell']} · 관망 {summary['hold']}",
         f"주문 접수 {summary['orders_submitted']}건 · 안전장치 차단 "
         f"{summary['orders_rejected_by_risk']}건 · 자동 청산 "
@@ -879,13 +965,17 @@ def _notify_summary(
         }
         for e in exits:
             emoji = tag_emoji.get(e["tag"], "•")
+            name_safe = escape_markdown(e.get("name", ""))
             lines.append(
-                f"{emoji} {e['name']} ({e['code']}) {e['qty']}주\n"
+                f"{emoji} {name_safe} ({e['code']}) {e['qty']}주\n"
                 f"  구매가 {int(e['entry_price']):,}원 → 판매가 {int(e['exit_price']):,}원 "
                 f"({e['pnl_pct']:+.2f}%)"
             )
             lines.append(f"  주문번호 `{e['order_no']}`")
 
+    # reasoning 풀텍스트 위치를 따로 보관 — 메시지 길이가 Telegram 한도(4096)에
+    # 근접하면 reasoning 만 잘라 끝에 "(이하 생략)" 표시. 한도 안에서는 절대 자르지 않음.
+    reasoning_idx: list[tuple[int, str]] = []  # (line index, full reasoning)
     if submitted:
         lines.append("")
         lines.append("*✅ 신규 주문 접수*")
@@ -893,12 +983,15 @@ def _notify_summary(
             side_ko = decision_ko(e["side"])
             side_emoji = "🟢" if e["side"] == "buy" else "🔴"
             conf_str = confidence_pct(e["confidence"])
+            name_safe = escape_markdown(e.get("name", ""))
             lines.append(
-                f"{side_emoji} {e['name']} ({e['code']}) {side_ko} "
+                f"{side_emoji} {name_safe} ({e['code']}) {side_ko} "
                 f"{e['qty']}주 @ 약 {int(e['price']):,}원 · 확신도 {conf_str}"
             )
             lines.append(f"  주문번호 `{e['order_no']}`")
-            lines.append(f"  _{e['reasoning'][:140]}_")
+            full_reason = escape_markdown(e.get("reasoning", ""))
+            lines.append(f"  _{full_reason}_")
+            reasoning_idx.append((len(lines) - 1, full_reason))
 
     if rejected:
         lines.append("")
@@ -906,8 +999,10 @@ def _notify_summary(
         for e in rejected:
             side_ko = decision_ko(e["side"])
             conf_str = confidence_pct(e["confidence"])
+            name_safe = escape_markdown(e.get("name", ""))
+            reason_safe = escape_markdown(e.get("reason", ""))
             lines.append(
-                f"- {e['name']} ({e['code']}) {side_ko} 확신도 {conf_str} — {e['reason']}"
+                f"- {name_safe} ({e['code']}) {side_ko} 확신도 {conf_str} — {reason_safe}"
             )
 
     # 체결 확인 결과 — 이번 사이클에 주문이 있었고 30초 뒤 조회했을 때만 표시
@@ -931,8 +1026,31 @@ def _notify_summary(
                     f"(다음 점검에서 재판단)"
                 )
 
+    # Telegram sendMessage 한도(4096). 한도 안에서는 reasoning 풀텍스트 유지.
+    # 한도 근접 시 reasoning 부터 균등하게 자르고 끝에 "… (이하 생략)" 표기.
+    text = "\n".join(lines)
+    TELEGRAM_LIMIT = 4096
+    if len(text) > TELEGRAM_LIMIT and reasoning_idx:
+        overflow = len(text) - TELEGRAM_LIMIT
+        suffix = "… (이하 생략)"
+        # 가장 긴 reasoning 부터 잘라 overflow 만큼 줄임
+        sorted_idx = sorted(reasoning_idx, key=lambda x: -len(x[1]))
+        for li, full in sorted_idx:
+            if overflow <= 0:
+                break
+            # 줄 형식: "  _<full>_" — 잘라낸 뒤에도 "  _<short>… (이하 생략)_"
+            wrapper_extra = len(suffix)
+            keep = max(20, len(full) - overflow - wrapper_extra)
+            short = full[:keep]
+            lines[li] = f"  _{short}{suffix}_"
+            saved = len(full) - len(short) - wrapper_extra
+            overflow -= saved
+        text = "\n".join(lines)
+        if len(text) > TELEGRAM_LIMIT:
+            text = text[: TELEGRAM_LIMIT - len(suffix)] + suffix
+
     telegram.send(
         settings.telegram,
-        "\n".join(lines),
+        text,
         reply_markup=cycle_summary_keyboard(kill_switch.is_active()),
     )
