@@ -232,8 +232,9 @@ def error_spike_watchdog_job(ctx: BotContext) -> None:
     from trading_bot.risk import kill_switch
     from trading_bot.store import repo
 
+    floor_ts = kill_switch.get_error_floor()
     try:
-        recent_1h = repo.count_recent_errors(minutes=60)
+        recent_1h = repo.count_recent_errors(minutes=60, floor_ts=floor_ts)
     except Exception:
         log.exception("에러 카운트 조회 실패")
         return
@@ -249,7 +250,10 @@ def error_spike_watchdog_job(ctx: BotContext) -> None:
             return  # 최소 유지 시간 미달
 
         try:
-            recent_30m = repo.count_recent_errors(minutes=_AUTO_KILL_RECOVERY_WINDOW_MIN)
+            recent_30m = repo.count_recent_errors(
+                minutes=_AUTO_KILL_RECOVERY_WINDOW_MIN,
+                floor_ts=floor_ts,
+            )
         except Exception:
             log.exception("복구 판정용 에러 카운트 조회 실패")
             return

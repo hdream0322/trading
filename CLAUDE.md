@@ -97,6 +97,9 @@ PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
   에러 10건 초과 시 킬스위치 자동 활성화. 자동 활성화된 킬스위치(`trigger: auto`)는
   15분 경과 + 최근 30분 에러 0건일 때 자동 해제, 1시간 내 재활성화되면 플래핑으로
   판정해 수동만 가능. **수동 킬스위치는 절대 자동 해제 안 함** (구조적 문제일 수 있음).
+  **수동 `/resume` 시 `data/ERROR_COUNT_FLOOR.ts` 갱신** — 회로차단기는 이 시각 이전
+  에러는 1시간 윈도우에서 제외하고 카운트. 충전·키 교체 후 풀어줬는데 옛 에러가
+  창에 남아 재트리거되는 문제 방지.
 
 - **submitted ≠ filled.** 시장가 주문도 상한가·거래정지·호가 부족으로 미체결 가능.
   사이클 끝에 `fill_tracker.reconcile_pending_orders` 가 KIS inquire-daily-ccld 로

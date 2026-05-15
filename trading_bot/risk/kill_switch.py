@@ -24,6 +24,12 @@ log = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 KILL_SWITCH_FILE = _PROJECT_ROOT / "data" / "KILL_SWITCH"
 AUTO_RELEASE_LOG_FILE = _PROJECT_ROOT / "data" / "KILL_SWITCH_AUTO_RELEASE.log"
+# 수동 /resume 시 기록되는 "이 시각 이전 에러는 회로차단기 카운트에서 제외" 기준.
+# 충전·수정 후 사용자가 풀어줬는데 옛 에러 14건이 1시간 윈도우에 남아 또 자동
+# 트리거되던 문제를 막는다. 자동 해제(auto=True)에는 안 찍는다 — 자동 해제는
+# 이미 "최근 30분 에러 0건" 조건으로 들어가서 floor 없이도 다음 트리거가 어차피
+# 새 에러를 요구하기 때문.
+ERROR_FLOOR_FILE = _PROJECT_ROOT / "data" / "ERROR_COUNT_FLOOR.ts"
 
 
 def is_active() -> bool:
@@ -43,14 +49,19 @@ def activate(reason: str = "", auto: bool = False) -> None:
 
 
 def deactivate(auto: bool = False) -> None:
-    """킬스위치 해제. auto=True 면 자동 해제 이력을 기록 (플래핑 판정용)."""
+    """킬스위치 해제. auto=True 면 자동 해제 이력을 기록 (플래핑 판정용).
+
+    수동 해제 시에는 ERROR_FLOOR 파일도 갱신해서 회로차단기가 옛 에러를
+    다시 카운트하지 않도록 한다.
+    """
     if KILL_SWITCH_FILE.exists():
         KILL_SWITCH_FILE.unlink()
         if auto:
             _record_auto_release()
             log.warning("KILL SWITCH 자동 해제")
         else:
-            log.warning("KILL SWITCH 수동 해제")
+            _set_error_floor()
+            log.warning("KILL SWITCH 수동 해제 (에러 카운트 floor 갱신)")
 
 
 def is_auto_triggered() -> bool:
@@ -94,6 +105,31 @@ def _record_auto_release() -> None:
             f.write(datetime.now().isoformat(timespec="seconds") + "\n")
     except Exception:
         log.exception("자동 해제 이력 기록 실패")
+
+
+def _set_error_floor() -> None:
+    try:
+        ERROR_FLOOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ERROR_FLOOR_FILE.write_text(
+            datetime.now().isoformat(timespec="seconds") + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        log.exception("에러 카운트 floor 기록 실패")
+
+
+def get_error_floor() -> datetime | None:
+    """수동 /resume 으로 찍힌 floor 시각. 회로차단기는 이 이후 ts 만 센다.
+
+    파일이 없거나 파싱 실패면 None — 종전대로 1시간 전체 윈도우 사용.
+    """
+    if not ERROR_FLOOR_FILE.exists():
+        return None
+    try:
+        first = ERROR_FLOOR_FILE.read_text(encoding="utf-8").splitlines()[0].strip()
+        return datetime.fromisoformat(first)
+    except Exception:
+        return None
 
 
 def count_recent_auto_releases(hours: int = 1) -> int:

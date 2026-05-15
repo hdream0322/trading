@@ -116,13 +116,17 @@ def update_order_status(
             )
 
 
-def count_recent_errors(minutes: int = 60) -> int:
+def count_recent_errors(minutes: int = 60, floor_ts: datetime | None = None) -> int:
     """최근 N분간 errors 테이블에 쌓인 에러 건수.
 
-    회로차단기(에러 급증 감지) 용도.
+    회로차단기(에러 급증 감지) 용도. floor_ts 가 주어지면 그 시각보다 오래된
+    에러는 카운트에서 제외 (수동 /resume 직후 옛 에러로 재트리거 방지).
     """
     from datetime import timedelta
-    cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+    cutoff_dt = datetime.now() - timedelta(minutes=minutes)
+    if floor_ts is not None and floor_ts > cutoff_dt:
+        cutoff_dt = floor_ts
+    cutoff = cutoff_dt.isoformat()
     with _conn() as conn:
         cur = conn.execute(
             "SELECT COUNT(*) FROM errors WHERE ts >= ?",
