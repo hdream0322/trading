@@ -445,14 +445,24 @@ def run_cycle(
                 label, hint, fatal = _classify_llm_error(llm_exc)
                 if not llm_alerted:
                     llm_alerted = True
+                    raw_snippet = str(llm_exc)[:200].replace("\n", " ")
+                    msg = (
+                        f"❗ *AI 분석 호출 실패* — {label}\n"
+                        f"종목: `{code}` {name}\n"
+                        f"{hint}\n\n"
+                        f"_원본 오류:_ `{raw_snippet}`\n\n"
+                        f"같은 오류가 이번 사이클에서 반복되면 알림은 한 번만 보내고 "
+                        f"나머지는 조용히 errors 테이블에만 적재합니다."
+                    )
+                    keyboard = {
+                        "inline_keyboard": [[
+                            {"text": "✅ 조치 완료 — 비상정지 풀기", "callback_data": "resume"},
+                            {"text": "💰 상태", "callback_data": "status"},
+                        ]]
+                    }
                     try:
                         telegram.send(
-                            settings.telegram,
-                            f"❗ AI 분석 호출 실패 — {label}\n"
-                            f"종목: `{code}` {name}\n"
-                            f"{hint}\n"
-                            f"이 사이클에서 동일 오류가 반복되면 조용히 errors 에만 기록돼요. "
-                            f"`/status` 로 상태 확인.",
+                            settings.telegram, msg, reply_markup=keyboard,
                         )
                     except Exception:
                         log.exception("LLM 오류 텔레그램 알림 실패")
