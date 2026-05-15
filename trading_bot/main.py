@@ -38,7 +38,7 @@ from trading_bot.risk import kill_switch
 from trading_bot.risk.manager import RiskManager
 from trading_bot.signals.briefing import send_close_briefing, send_open_briefing
 from trading_bot.signals.cycle import run_cycle
-from trading_bot.signals.llm import ClaudeSignalClient
+from trading_bot.signals.llm import ClaudeSignalClient, check_pricing_config
 from trading_bot.store.db import init_db
 from trading_bot.utils.calendar_kr import is_market_open_now
 
@@ -50,6 +50,13 @@ def build_llm(settings: Settings) -> ClaudeSignalClient | None:
         log.warning("ANTHROPIC_API_KEY 비어있음 — LLM 비활성 상태로 실행")
         return None
     llm_cfg = settings.llm
+    # 단가 미설정 경고 — 누락 시 dedup 1회 log.warning + 텔레그램 알림.
+    pricing_warn_msg = check_pricing_config(dict(llm_cfg))
+    if pricing_warn_msg:
+        try:
+            telegram.send(settings.telegram, pricing_warn_msg)
+        except Exception:
+            log.exception("LLM 단가 경고 텔레그램 알림 실패")
     return ClaudeSignalClient(
         api_key=settings.anthropic_api_key,
         model=str(llm_cfg.get("model", "claude-haiku-4-5-20251001")),
@@ -221,6 +228,8 @@ def fundamentals_refresh_job(ctx: BotContext) -> None:
 # 자동 킬스위치 복구 정책
 # - 자동 활성화 후 최소 15분 경과 + 최근 30분 에러 0건 → 자동 해제
 # - 해제 직후 1시간 내 재활성화되면 그 뒤로는 수동 해제만 허용 (플래핑 방지)
+# - 수동으로 KILL_SWITCH 파일을 삭제(rm) 했을 때도 error floor 를 자동 갱신 [D8]
+_prev_kill_state: bool | None = None  # watchdog 이전 호출 시 킬스위치 활성 여부
 _AUTO_KILL_THRESHOLD = 10          # 최근 1시간 에러 이만큼 쌓이면 자동 활성화
 _AUTO_KILL_MIN_ACTIVE_MIN = 15     # 활성화 후 최소 이 시간은 유지 (즉시 풀림 방지)
 _AUTO_KILL_RECOVERY_WINDOW_MIN = 30  # 이 시간 동안 에러 0건이면 복구로 판정
@@ -438,11 +447,17 @@ def credentials_watcher_job(ctx: BotContext) -> None:
     if current_mtime == runtime_state.credentials_last_mtime:
         return  # 변경 없음
 
-    log.info(
-        "credentials.env 변경 감지 (%s → %s) 자동 재로드 시작",
-        runtime_state.credentials_last_mtime, current_mtime,
-    )
-    runtime_state.credentials_last_mtime = current_mtime
+    # /setcreds 핸들러와 동시 reload 경합 방지 — lock 안에서 mtime 재확인 후 진행
+    with ctx.creds_lock:
+        # lock 진입 전 /setcreds 가 이미 mtime 을 갱신했으면 skip
+        if current_mtime == runtime_state.credentials_last_mtime:
+            return
+
+        log.info(
+            "credentials.env 변경 감지 (%s → %s) 자동 재로드 시작",
+            runtime_state.credentials_last_mtime, current_mtime,
+        )
+        runtime_state.credentials_last_mtime = current_mtime
 
     try:
         load_credentials_override()

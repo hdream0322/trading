@@ -8,6 +8,29 @@ from anthropic import Anthropic
 
 log = logging.getLogger(__name__)
 
+# 단가 미설정 경고 dedup 플래그 — 프로세스 당 1회만 경고.
+_pricing_warned = False
+
+
+def check_pricing_config(llm_cfg: dict) -> str | None:
+    """settings.yaml llm 섹션에 단가가 명시되지 않은 경우 경고 메시지를 반환한다.
+    이미 경고한 적 있으면 None 을 반환 (dedup).
+    """
+    global _pricing_warned
+    if _pricing_warned:
+        return None
+    if llm_cfg.get("input_price_per_mtok") is None or llm_cfg.get("output_price_per_mtok") is None:
+        _pricing_warned = True
+        log.warning(
+            "LLM 단가가 settings.yaml 에 명시되지 않아 기본값($1/$5) 사용 중. "
+            "모델별 실제 단가로 settings.yaml 수정 권장."
+        )
+        return (
+            "⚠️ LLM 단가가 settings.yaml 에 명시되지 않아 기본값($1/$5) 사용 중. "
+            "모델별 실제 단가로 settings.yaml 수정 권장."
+        )
+    return None
+
 
 SYSTEM_PROMPT = """당신은 보수적인 한국 주식 매매 어시스턴트입니다.
 주어진 종목 데이터(가격, RSI, 거래량 비율, 최근 일봉 OHLCV)를 바탕으로
@@ -63,6 +86,7 @@ class LlmDecision:
     output_tokens: int
     model: str
     cost_usd: float
+    schema_violation: bool = False
 
 
 class ClaudeSignalClient:
@@ -183,10 +207,45 @@ class ClaudeSignalClient:
                 "LLM 캐시 히트: %d 토큰 재사용 (~90%% 절감)", cache_read,
             )
 
+        # 스키마 위반 robust 처리 — 모델이 enum·범위 벗어난 값 반환 시 폴백.
+        schema_violation = False
+        _valid_decisions = {"buy", "sell", "hold"}
+
+        raw_decision = str(tool_input.get("decision", "")).strip().lower()
+        if raw_decision not in _valid_decisions:
+            log.warning(
+                "LLM 스키마 위반 — decision='%s' (허용값: buy/sell/hold). hold 로 폴백.",
+                raw_decision,
+            )
+            schema_violation = True
+            raw_decision = "hold"
+
+        raw_confidence = tool_input.get("confidence")
+        try:
+            conf_float = float(raw_confidence)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            log.warning("LLM 스키마 위반 — confidence 파싱 불가: %r. 0.0 으로 폴백.", raw_confidence)
+            schema_violation = True
+            conf_float = 0.0
+        if conf_float < 0.0:
+            log.warning("LLM 스키마 위반 — confidence=%f < 0. 0.0 으로 클램핑.", conf_float)
+            schema_violation = True
+            conf_float = 0.0
+        elif conf_float > 1.0:
+            log.warning("LLM 스키마 위반 — confidence=%f > 1. 1.0 으로 클램핑.", conf_float)
+            schema_violation = True
+            conf_float = 1.0
+
+        raw_reasoning = tool_input.get("reasoning")
+        if not raw_reasoning or not str(raw_reasoning).strip():
+            log.warning("LLM 스키마 위반 — reasoning 누락. 기본값 사용.")
+            schema_violation = True
+            raw_reasoning = "AI 응답 누락"
+
         return LlmDecision(
-            decision=str(tool_input["decision"]),
-            confidence=float(tool_input["confidence"]),
-            reasoning=str(tool_input["reasoning"]),
+            decision=raw_decision,
+            confidence=conf_float,
+            reasoning=str(raw_reasoning),
             # 토큰 통계 — 캐시 read 는 신규 입력이 아니므로 합산 제외.
             # cache_creation 은 처음 캐시에 올린 입력이라 합산 (실제 처리량).
             # cost 는 위에서 이미 별도 단가로 정확히 계산됨.
@@ -194,4 +253,5 @@ class ClaudeSignalClient:
             output_tokens=output_tokens,
             model=self.model,
             cost_usd=cost,
+            schema_violation=schema_violation,
         )
