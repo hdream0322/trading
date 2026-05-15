@@ -46,7 +46,14 @@ def sync_position_state(
 
     - 신규 포지션: state 생성 (entry_price = KIS avg_price, hwm = 현재가)
     - 사라진 포지션: state 삭제
-    - 유지 중인 포지션: high_water_mark 갱신
+    - 유지 중인 포지션: high_water_mark 갱신, 추가매수 감지 시 cost_basis 갱신
+
+    entry_price 보존 정책:
+    - 기존 row 가 있으면 entry_price 는 절대 KIS avg 로 덮어쓰지 않음.
+    - 추가매수로 qty 증가 + KIS avg 변경이 감지되면 cost_basis 만 갱신.
+    - hwm 은 기존 값 유지 (보수 정책, 손절이 늦어지지 않게).
+    - entry_price 는 처음 진입 가격 (사용자가 인식하는 기준가).
+    - cost_basis 는 추가매수 후 KIS 가중평균 (trailing 활성화 임계 비교용).
 
     반환: 동기화 후의 state dict {code: state_dict}
     """
@@ -55,6 +62,16 @@ def sync_position_state(
     # 신규 진입 포지션 기록
     for code, pos in holdings.items():
         if code in existing:
+            # 기존 포지션: KIS avg 가 기존 cost_basis 와 달라졌으면 추가매수로 판단.
+            # entry_price 와 hwm 은 보존 (보수 정책).
+            kis_avg = float(pos["avg_price"])
+            prev_cost = float(existing[code].get("cost_basis") or existing[code]["entry_price"])
+            if abs(kis_avg - prev_cost) > 0.5:
+                repo.update_position_cost_basis(code, kis_avg)
+                log.info(
+                    "평단 변경 감지 — cost_basis 갱신: %s %.0f→%.0f (entry_price·hwm 보존)",
+                    code, prev_cost, kis_avg,
+                )
             continue
         repo.insert_position_state(
             code=code,
@@ -63,6 +80,7 @@ def sync_position_state(
             entry_price=float(pos["avg_price"]),
             high_water_mark=float(pos["cur_price"]),
             trailing_active=False,
+            cost_basis=float(pos["avg_price"]),
         )
         log.info(
             "신규 포지션 state 기록: %s %s entry=%.0f",
@@ -103,6 +121,9 @@ def check_exit(
     """
     cur = float(pos["cur_price"])
     entry = float(state.get("entry_price") or pos["avg_price"])
+    # cost_basis: 추가매수 후 KIS 가중평균. 없으면 entry_price 로 폴백.
+    # trailing 활성화 임계 비교에 사용 (추가매수 후 평단 기준으로 판단).
+    cost_basis = float(state.get("cost_basis") or entry)
     name = pos.get("name", pos.get("code", "?"))
 
     if entry <= 0 or cur <= 0:
@@ -142,8 +163,10 @@ def check_exit(
         )
 
     # 3. 고점 대비 하락 (트레일링 스톱)
-    # 활성 조건: hwm 기준 손익률이 활성화 임계값 이상이었어야 함
-    hwm_pnl_pct = (hwm - entry) / entry * 100
+    # 활성 조건: hwm 이 cost_basis 대비 활성화 임계값 이상이었어야 함.
+    # cost_basis = 추가매수 후 KIS 가중평균 (없으면 entry_price).
+    # hwm 은 기존 값 보존 (보수 정책).
+    hwm_pnl_pct = (hwm - cost_basis) / cost_basis * 100 if cost_basis > 0 else 0.0
     if hwm_pnl_pct >= trailing_activation_pct:
         # 최고점 대비 현재가 낙폭
         drop_from_hwm = (cur - hwm) / hwm * 100
@@ -186,9 +209,11 @@ def update_high_water_mark(
     old_hwm = float(state.get("high_water_mark") or current_price)
     old_trailing = bool(state.get("trailing_active"))
     entry = float(state.get("entry_price") or current_price)
+    # trailing 활성화 임계는 cost_basis 기준 (추가매수 후 평단 반영).
+    cost_basis = float(state.get("cost_basis") or entry)
 
     new_hwm = max(old_hwm, current_price)
-    hwm_pnl_pct = (new_hwm - entry) / entry * 100 if entry > 0 else 0.0
+    hwm_pnl_pct = (new_hwm - cost_basis) / cost_basis * 100 if cost_basis > 0 else 0.0
 
     trailing_activation_pct = float(config.get("trailing_activation_pct", 7))
     new_trailing = old_trailing or (hwm_pnl_pct >= trailing_activation_pct)

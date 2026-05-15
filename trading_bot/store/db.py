@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS position_state (
     entry_ts TEXT NOT NULL,
     entry_price REAL NOT NULL,
     high_water_mark REAL NOT NULL,
-    trailing_active INTEGER DEFAULT 0
+    trailing_active INTEGER DEFAULT 0,
+    cost_basis REAL
 );
 
 CREATE TABLE IF NOT EXISTS fundamentals_cache (
@@ -116,7 +117,7 @@ def init_db() -> sqlite3.Connection:
     # busy_timeout: 잠시 대기 후 재시도 (즉시 OperationalError 회피).
     try:
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA synchronous=NORMAL")
     except sqlite3.DatabaseError as exc:
         log.warning("PRAGMA 적용 실패 (계속 진행): %s", exc)
@@ -135,6 +136,12 @@ def init_db() -> sqlite3.Connection:
     if "evaluated_at" not in cols:
         conn.execute("ALTER TABLE signals ADD COLUMN evaluated_at TEXT")
         log.info("signals 테이블에 evaluated_at 컬럼 추가 (마이그레이션)")
+
+    cur = conn.execute("PRAGMA table_info(position_state)")
+    cols_ps = {row[1] for row in cur.fetchall()}
+    if "cost_basis" not in cols_ps:
+        conn.execute("ALTER TABLE position_state ADD COLUMN cost_basis REAL")
+        log.info("position_state 테이블에 cost_basis 컬럼 추가 (마이그레이션)")
 
     cur = conn.execute("PRAGMA table_info(orders)")
     cols_orders = {row[1] for row in cur.fetchall()}

@@ -2,26 +2,49 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from datetime import datetime
-from typing import Any
+from functools import wraps
+from typing import Any, Callable, TypeVar
 
 from trading_bot.signals.exit_constants import stop_loss_reason_like_pattern
 from trading_bot.store.db import DB_PATH
 
 log = logging.getLogger(__name__)
 
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _retry_on_locked(func: _F) -> _F:
+    """SQLite 'database is locked' 첫 실패 시 0.5초 후 1회 재시도.
+
+    두 번째도 실패하면 그대로 raise. write 함수 전용 데코레이터.
+    """
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower():
+                log.warning("SQLite locked — 0.5초 후 재시도: %s", func.__qualname__)
+                time.sleep(0.5)
+                return func(*args, **kwargs)
+            raise
+    return wrapper  # type: ignore[return-value]
+
 
 def _conn() -> sqlite3.Connection:
     # busy_timeout 은 connection 단위 — 매번 fresh connection 이라 여기서 설정.
     # WAL 모드는 DB 파일에 영속이므로 init_db 1회 적용으로 충분.
-    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
     try:
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=10000")
     except sqlite3.DatabaseError:
         pass
     return conn
 
 
+@_retry_on_locked
 def insert_signal(
     ts: str,
     code: str,
@@ -58,6 +81,7 @@ def today_llm_cost_usd() -> float:
         return float(cur.fetchone()[0])
 
 
+@_retry_on_locked
 def insert_error(component: str, message: str, traceback: str | None = None) -> None:
     ts = datetime.now().isoformat()
     with _conn() as conn:
@@ -99,6 +123,7 @@ def get_pending_orders_today() -> list[dict[str, Any]]:
         ]
 
 
+@_retry_on_locked
 def update_order_status(
     order_id: int,
     status: str,
@@ -138,6 +163,7 @@ def count_recent_errors(minutes: int = 60, floor_ts: datetime | None = None) -> 
         return int(cur.fetchone()[0])
 
 
+@_retry_on_locked
 def insert_order(
     ts: str,
     code: str,
@@ -224,6 +250,7 @@ def get_today_orders() -> list[dict[str, object]]:
         ]
 
 
+@_retry_on_locked
 def record_cycle_run(
     ts: str,
     total_stocks: int,
@@ -335,6 +362,7 @@ def _bucket_risk_reason(reason: str) -> str:
     return "기타"
 
 
+@_retry_on_locked
 def upsert_pnl_daily(
     date: str,
     starting_equity: float | None,
@@ -411,6 +439,7 @@ def get_all_position_states() -> dict[str, dict[str, object]]:
         return result
 
 
+@_retry_on_locked
 def insert_position_state(
     code: str,
     name: str | None,
@@ -430,6 +459,7 @@ def insert_position_state(
         )
 
 
+@_retry_on_locked
 def update_position_hwm(code: str, high_water_mark: float, trailing_active: bool) -> None:
     with _conn() as conn:
         conn.execute(
@@ -438,6 +468,7 @@ def update_position_hwm(code: str, high_water_mark: float, trailing_active: bool
         )
 
 
+@_retry_on_locked
 def update_position_cost_basis(code: str, cost_basis: float) -> None:
     """추가매수로 KIS 평단가 변경 시 cost_basis 만 갱신 (entry_price·hwm 불변)."""
     with _conn() as conn:
@@ -447,6 +478,7 @@ def update_position_cost_basis(code: str, cost_basis: float) -> None:
         )
 
 
+@_retry_on_locked
 def delete_position_state(code: str) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM position_state WHERE code = ?", (code,))
@@ -486,6 +518,7 @@ def get_signals_awaiting_eval(cutoff_ts: str) -> list[dict[str, Any]]:
         ]
 
 
+@_retry_on_locked
 def update_signal_forward_return(
     signal_id: int,
     realized_return_pct: float,
@@ -614,6 +647,7 @@ def get_fundamentals_cache(code: str) -> dict[str, Any] | None:
         }
 
 
+@_retry_on_locked
 def upsert_fundamentals_cache(
     code: str,
     name: str | None,
