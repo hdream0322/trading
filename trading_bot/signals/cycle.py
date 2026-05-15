@@ -69,6 +69,49 @@ def _elapsed_session_ratio(now: datetime, open_hhmm: str, close_hhmm: str) -> fl
     return min(1.0, ratio)
 
 
+def _classify_llm_error(exc: Exception) -> tuple[str, str, bool]:
+    """Anthropic API 예외를 사용자 메시지·치명 여부로 분류.
+
+    Returns (label, hint, fatal):
+      - label: 텔레그램 한 줄 라벨
+      - hint:  대응 가이드
+      - fatal: True 면 사이클 잔여 종목 LLM 호출 생략 (재시도 의미 없는 오류)
+    """
+    msg = str(exc).lower()
+    if "credit balance" in msg or "insufficient" in msg or "plans & billing" in msg:
+        return (
+            "💳 AI 크레딧 부족",
+            "https://console.anthropic.com/settings/billing 에서 충전 후 `/resume`.",
+            True,
+        )
+    if "invalid_api_key" in msg or "authentication" in msg or "unauthorized" in msg:
+        return (
+            "🔑 AI API 키 오류",
+            "`/setcreds anthropic` 로 키 재설정 필요.",
+            True,
+        )
+    if "rate_limit" in msg or "429" in msg or "too many requests" in msg:
+        return (
+            "⏳ AI 호출 제한",
+            "잠시 후 다음 사이클에서 자동 재시도.",
+            False,
+        )
+    if "overloaded" in msg or "529" in msg:
+        return (
+            "🌐 AI 서버 과부하",
+            "Anthropic 일시 장애 가능 — 다음 사이클 자동 재시도.",
+            False,
+        )
+    if "timeout" in msg or "timed out" in msg or "connection" in msg:
+        return (
+            "📡 AI 네트워크 오류",
+            "일시적 네트워크 문제 — 다음 사이클 자동 재시도.",
+            False,
+        )
+    snippet = str(exc)[:160].replace("\n", " ")
+    return (f"❗ AI 호출 실패: {snippet}", "errors 테이블 traceback 확인.", False)
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -227,6 +270,13 @@ def run_cycle(
         [str(u["code"]) for u in universe_order],
     )
 
+    # LLM 호출 실패 알림 — 한 사이클 안에서 모든 종목 LLM 이 실패하면 텔레그램이
+    # 도배되므로 첫 실패에만 분류된 사유를 알리고 이후엔 조용히 errors 테이블에만
+    # 적재. credit/auth 류 치명 오류면 사이클 잔여 종목 LLM 호출 자체를 중단해서
+    # 비용·errors 누적도 막는다.
+    llm_alerted = False
+    llm_abort = False
+
     for item in universe_order:
         code = str(item["code"])
         name = str(item["name"])
@@ -384,7 +434,32 @@ def run_cycle(
                     summary["hold"] += 1
                     continue
 
-            decision = llm.decide(features, ohlcv)
+            if llm_abort:
+                # 같은 사이클에서 credit/auth 류 치명 오류 발생 — LLM 호출 생략
+                summary["hold"] += 1
+                continue
+
+            try:
+                decision = llm.decide(features, ohlcv)
+            except Exception as llm_exc:
+                label, hint, fatal = _classify_llm_error(llm_exc)
+                if not llm_alerted:
+                    llm_alerted = True
+                    try:
+                        telegram.send(
+                            settings.telegram,
+                            f"❗ AI 분석 호출 실패 — {label}\n"
+                            f"종목: `{code}` {name}\n"
+                            f"{hint}\n"
+                            f"이 사이클에서 동일 오류가 반복되면 조용히 errors 에만 기록돼요. "
+                            f"`/status` 로 상태 확인.",
+                        )
+                    except Exception:
+                        log.exception("LLM 오류 텔레그램 알림 실패")
+                if fatal:
+                    llm_abort = True
+                # 기존 outer except 흐름으로 넘겨 errors 테이블 적재 + summary 카운트
+                raise
             daily_cost += decision.cost_usd
             summary["cost_usd"] += decision.cost_usd
             cost_alert.maybe_warn(daily_cost, daily_warn, daily_limit, settings.telegram)
