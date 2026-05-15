@@ -20,14 +20,14 @@ def _load_holidays() -> set[date]:
         return set()
     raw = yaml.safe_load(HOLIDAYS_FILE.read_text(encoding="utf-8")) or {}
     dates: set[date] = set()
-    for year_holidays in raw.values():
+    for key, year_holidays in raw.items():
         if not year_holidays:
             continue
         for entry in year_holidays:
             try:
                 dates.add(date.fromisoformat(entry["date"]))
             except (KeyError, ValueError) as exc:
-                log.warning("휴장일 항목 파싱 실패: %s (%s)", entry, exc)
+                log.warning("휴장일 항목 파싱 실패 [%s]: %s (%s)", key, entry, exc)
     return dates
 
 

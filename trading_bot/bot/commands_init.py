@@ -460,10 +460,12 @@ def _apply_credentials(ctx: BotContext, mode: str, collected: dict[str, str]) ->
         CREDENTIALS_OVERRIDE_FILE.chmod(0o600)
     except OSError:
         pass
-    try:
-        runtime_state.credentials_last_mtime = CREDENTIALS_OVERRIDE_FILE.stat().st_mtime
-    except OSError:
-        pass
+    # creds_lock 안에서 mtime 갱신 — watcher 와의 race 방지
+    with ctx.creds_lock:
+        try:
+            runtime_state.credentials_last_mtime = CREDENTIALS_OVERRIDE_FILE.stat().st_mtime
+        except OSError:
+            pass
 
     applied_now = False
     load_credentials_override()

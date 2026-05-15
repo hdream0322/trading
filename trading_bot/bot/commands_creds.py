@@ -200,10 +200,12 @@ def cmd_setcreds(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         except OSError:
             pass
         # watcher 가 중복 반응하지 않도록 mtime 기록 선반영
-        try:
-            runtime_state.credentials_last_mtime = CREDENTIALS_OVERRIDE_FILE.stat().st_mtime
-        except OSError:
-            pass
+        # creds_lock 안에서 갱신해야 watcher 와의 race 를 원천 차단
+        with ctx.creds_lock:
+            try:
+                runtime_state.credentials_last_mtime = CREDENTIALS_OVERRIDE_FILE.stat().st_mtime
+            except OSError:
+                pass
     except OSError as exc:
         return _reply(f"❌ credentials.env 파일 쓰기 실패\n`{exc}`")
 

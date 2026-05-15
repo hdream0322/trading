@@ -12,6 +12,7 @@ from trading_bot import __version__ as bot_version
 from trading_bot.bot import mode_switch, quiet_mode, update_manager
 from trading_bot.bot.commands_funda import is_enabled as _funda_is_enabled
 from trading_bot.bot.context import BotContext
+from trading_bot.notify.markdown_escape import escape_markdown
 from trading_bot.bot.formatters import (
     confidence_pct,
     decision_ko,
@@ -92,6 +93,8 @@ HELP_TEXT = """*자동매매 봇 사용법*
 `/export` 📤 CSV·DB 내보내기 메뉴
 `/logs` 최근 로그 / `logs error` / `logs file`
 `/setcreds` 앱키·시크릿 교체 (3개월 갱신)
+`/holiday add YYYY-MM-DD 사유` 임시 휴장일 등록
+`/holiday list` / `remove YYYY-MM-DD` 조회·제거
 `/init` 🚀 첫 설치 마법사
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -126,7 +129,7 @@ def cmd_status(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     try:
         bal = ctx.kis.get_balance()
     except Exception as exc:
-        return _reply(f"❌ 계좌 조회 실패\n`{exc}`")
+        return _reply(f"❌ 계좌 조회 실패\n`{escape_markdown(str(exc))}`")
     bs = bal.get("summary", {}) or {}
     holdings = KisClient.normalize_holdings(bal.get("holdings", []))
 
@@ -162,7 +165,7 @@ def cmd_positions(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     try:
         bal = ctx.kis.get_balance()
     except Exception as exc:
-        return _reply(f"❌ 계좌 조회 실패\n`{exc}`")
+        return _reply(f"❌ 계좌 조회 실패\n`{escape_markdown(str(exc))}`")
     holdings = KisClient.normalize_holdings(bal.get("holdings", []))
     if not holdings:
         return _reply("갖고 있는 주식이 없습니다")
@@ -198,7 +201,7 @@ def cmd_signals(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         signal_summary = repo.get_today_signal_summary()
         risk_reasons = repo.get_today_risk_rejection_reasons()
     except Exception as exc:
-        return _reply(f"❌ 기록 조회 실패\n`{exc}`")
+        return _reply(f"❌ 기록 조회 실패\n`{escape_markdown(str(exc))}`")
 
     lines: list[str] = []
     if rows:
@@ -246,7 +249,7 @@ def cmd_cost(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     try:
         daily_cost = repo.today_llm_cost_usd()
     except Exception as exc:
-        return _reply(f"❌ 비용 조회 실패\n`{exc}`")
+        return _reply(f"❌ 비용 조회 실패\n`{escape_markdown(str(exc))}`")
     limit = float(ctx.settings.llm.get("daily_cost_limit_usd", 5.0))
     pct = (daily_cost / limit * 100) if limit > 0 else 0
     return _reply(
@@ -266,7 +269,7 @@ def cmd_accuracy(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         buckets = repo.get_accuracy_by_confidence_bucket()
         cross = repo.get_accuracy_by_cross_check()
     except Exception as exc:
-        return _reply(f"❌ 정확도 조회 실패\n`{exc}`")
+        return _reply(f"❌ 정확도 조회 실패\n`{escape_markdown(str(exc))}`")
 
     total = sum(b["count"] for b in buckets)
     if total == 0:
@@ -401,7 +404,7 @@ def cmd_sell(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     try:
         bal = ctx.kis.get_balance()
     except Exception as exc:
-        return _reply(f"❌ 계좌 조회 실패\n`{exc}`")
+        return _reply(f"❌ 계좌 조회 실패\n`{escape_markdown(str(exc))}`")
     holdings = KisClient.normalize_holdings(bal.get("holdings", []))
 
     if not args:
@@ -425,11 +428,11 @@ def _build_sell_confirm(
 ) -> dict[str, Any]:
     """holdings 맵에서 code 를 찾아 판매 확인 화면을 만든다 (재사용 헬퍼)."""
     if code not in holdings:
-        return _reply(f"`{code}` 종목은 갖고 있지 않습니다")
+        return _reply(f"`{escape_markdown(code)}` 종목은 갖고 있지 않습니다")
     p = holdings[code]
     text = (
         f"*판매 확인 필요*\n"
-        f"{p['name']} (`{code}`)\n"
+        f"{escape_markdown(p['name'])} (`{escape_markdown(code)}`)\n"
         f"수량: *{int(p['qty'])}주*\n"
         f"평균 구매가 {int(p['avg_price']):,}원 · 지금 가격 {int(p['cur_price']):,}원\n"
         f"손익 {int(p['pnl']):+,}원 ({p['pnl_pct']:+.2f}%)\n\n"
@@ -443,7 +446,7 @@ def _sell_select(ctx: BotContext, code: str) -> dict[str, Any]:
     try:
         bal = ctx.kis.get_balance()
     except Exception as exc:
-        return _reply(f"❌ 계좌 조회 실패\n`{exc}`")
+        return _reply(f"❌ 계좌 조회 실패\n`{escape_markdown(str(exc))}`")
     holdings = KisClient.normalize_holdings(bal.get("holdings", []))
     return _build_sell_confirm(holdings, code)
 
@@ -460,7 +463,7 @@ def cmd_cycle(ctx: BotContext, args: list[str]) -> dict[str, Any]:
             )
         except Exception as exc:
             log.exception("수동 점검 실행 실패")
-            return _reply(f"❌ 점검 실행 중 오류\n`{exc}`")
+            return _reply(f"❌ 점검 실행 중 오류\n`{escape_markdown(str(exc))}`")
     return _reply(
         f"*점검 완료*\n"
         f"후보 {summary.get('candidates', 0)} · "
@@ -691,17 +694,17 @@ def _execute_confirmed_sell(ctx: BotContext, code: str) -> dict[str, Any]:
         try:
             bal = ctx.kis.get_balance()
         except Exception as exc:
-            return _reply(f"❌ 계좌 조회 실패\n`{exc}`")
+            return _reply(f"❌ 계좌 조회 실패\n`{escape_markdown(str(exc))}`")
         holdings = KisClient.normalize_holdings(bal.get("holdings", []))
         if code not in holdings:
-            return _reply(f"`{code}` 종목은 이미 갖고 있지 않습니다")
+            return _reply(f"`{escape_markdown(code)}` 종목은 이미 갖고 있지 않습니다")
         p = holdings[code]
         qty = int(p["qty"])
         try:
             result = ctx.kis.place_market_order(code, "sell", qty)
         except Exception as exc:
             repo.insert_error(component="manual_sell", message=f"{code} {qty}: {exc}")
-            return _reply(f"❌ *판매 실패*\n{p['name']} ({code})\n`{exc}`")
+            return _reply(f"❌ *판매 실패*\n{escape_markdown(p['name'])} ({escape_markdown(code)})\n`{escape_markdown(str(exc))}`")
 
         order_no = result["order_no"]
         repo.insert_order(

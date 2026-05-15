@@ -167,6 +167,53 @@ def delete_message(cfg: TelegramConfig, message_id: int) -> bool:
         return False
 
 
+def send_long(
+    cfg: TelegramConfig,
+    text: str,
+    parse_mode: str = "Markdown",
+    reply_markup: dict[str, Any] | None = None,
+) -> bool:
+    """4096자 초과 시 줄바꿈 경계 기준으로 분할해 여러 메시지로 전송.
+
+    reply_markup 은 마지막 메시지에만 붙인다.
+    분할 없이 한 메시지로 끝나면 send() 와 동일.
+    """
+    LIMIT = 4096
+    if len(text) <= LIMIT:
+        return send(cfg, text, parse_mode=parse_mode, reply_markup=reply_markup)
+
+    # 줄바꿈 경계 기준 분할
+    chunks: list[str] = []
+    lines = text.split("\n")
+    current: list[str] = []
+    current_len = 0
+
+    for line in lines:
+        # +1 은 줄바꿈 문자
+        add_len = len(line) + 1
+        if current and current_len + add_len > LIMIT:
+            chunks.append("\n".join(current))
+            current = [line]
+            current_len = add_len
+        else:
+            current.append(line)
+            current_len += add_len
+
+    if current:
+        chunks.append("\n".join(current))
+
+    ok = True
+    for i, chunk in enumerate(chunks):
+        is_last = i == len(chunks) - 1
+        ok &= send(
+            cfg,
+            chunk,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup if is_last else None,
+        )
+    return ok
+
+
 def answer_callback(
     cfg: TelegramConfig,
     callback_query_id: str,

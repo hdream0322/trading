@@ -49,8 +49,10 @@ from trading_bot.bot.commands_universe import (
     _universe_remove_preview,
     cmd_universe,
 )
+from trading_bot.bot.commands_holiday import cmd_holiday
 from trading_bot.bot.commands_update import cmd_notes, cmd_update
 from trading_bot.bot.context import BotContext
+from trading_bot.notify.markdown_escape import escape_markdown
 from trading_bot.bot.formatters import (  # noqa: F401 — 외부에서 commands.* 로 임포트
     confidence_pct,
     decision_ko,
@@ -117,18 +119,19 @@ COMMAND_MAP: dict[str, Callable[[BotContext, list[str]], dict[str, Any]]] = {
     "/init": cmd_init,
     "/config": cmd_config,
     "/set": cmd_set,
+    "/holiday": cmd_holiday,
 }
 
 
 def handle_command(ctx: BotContext, cmd: str, args: list[str]) -> dict[str, Any] | None:
     handler = COMMAND_MAP.get(cmd.lower())
     if handler is None:
-        return _reply(f"모르는 명령어: `{cmd}`\n`/help` 로 목록 보기")
+        return _reply(f"모르는 명령어: `{escape_markdown(cmd)}`\n`/help` 로 목록 보기")
     try:
         return handler(ctx, args)
     except Exception as exc:
         log.exception("커맨드 %s 처리 중 예외", cmd)
-        return _reply(f"❌ 처리 실패\n`{type(exc).__name__}: {exc}`")
+        return _reply(f"❌ 처리 실패\n`{escape_markdown(type(exc).__name__)}: {escape_markdown(str(exc))}`")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -212,7 +215,7 @@ def handle_callback(ctx: BotContext, data: str) -> dict[str, Any] | None:
         return handle_config_callback(ctx, data)
     if data.startswith("style_to:"):
         return handle_style_callback(ctx, data)
-    return _reply(f"모르는 버튼: `{data}`")
+    return _reply(f"모르는 버튼: `{escape_markdown(data)}`")
 
 
 # ─────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ from trading_bot.bot import commands_init
 from trading_bot.bot.commands import handle_callback, handle_command
 from trading_bot.bot.context import BotContext
 from trading_bot.notify import telegram
+from trading_bot.notify.markdown_escape import escape_markdown
 
 log = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ class TelegramPoller:
                 except Exception as exc:
                     log.exception("커맨드 처리 중 예외: %s", cmd)
                     reply = {
-                        "text": f"❌ `{cmd}` 처리 중 오류\n`{type(exc).__name__}: {exc}`",
+                        "text": f"❌ `{escape_markdown(cmd)}` 처리 중 오류\n`{escape_markdown(type(exc).__name__)}: {escape_markdown(str(exc))}`",
                     }
 
                 if not reply:
@@ -177,7 +178,7 @@ class TelegramPoller:
                             caption=out_text or None,
                         )
                     else:
-                        telegram.send(
+                        telegram.send_long(
                             self.ctx.settings.telegram,
                             out_text,
                             reply_markup=reply.get("reply_markup"),
@@ -247,7 +248,7 @@ class TelegramPoller:
                         caption=reply.get("text") or None,
                     )
                 else:
-                    telegram.send(
+                    telegram.send_long(
                         self.ctx.settings.telegram,
                         reply.get("text", ""),
                         reply_markup=reply.get("reply_markup"),

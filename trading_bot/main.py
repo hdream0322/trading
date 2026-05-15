@@ -247,9 +247,26 @@ def error_spike_watchdog_job(ctx: BotContext) -> None:
     - 자동 해제: 자동 활성화된 상태 + 최소 15분 경과 + 최근 30분 에러 0건 → 자동 해제 + 알림
     - 플래핑 방지: 최근 1시간 내 자동 해제 이력 있으면 재활성화는 그대로 하되 자동 해제는 안 함
     - 수동(/stop, touch) 으로 걸린 킬스위치는 절대 자동 해제하지 않음
+    - 수동 rm 으로 KILL_SWITCH 파일을 직접 삭제한 경우 error floor 자동 갱신 [D8]
     """
+    global _prev_kill_state
     from trading_bot.risk import kill_switch
     from trading_bot.store import repo
+
+    current_kill = kill_switch.is_active()
+
+    # [D8] 이전 호출엔 킬스위치가 켜져 있었는데 지금 꺼져 있고,
+    # 자동 해제 경로가 아닌 경우(= 수동 rm) → error floor 갱신
+    if _prev_kill_state is True and not current_kill:
+        # 자동 해제는 deactivate(auto=True) 를 거쳐 이미 _record_auto_release() 를
+        # 찍고 끝나므로 여기서는 추가 처리가 필요 없다.
+        # 수동 해제(/resume) 는 deactivate(auto=False) 가 _set_error_floor() 를 호출.
+        # 즉, 이 분기는 "파일을 직접 rm 한" 케이스만 해당.
+        # 직접 rm 은 deactivate() 를 거치지 않아 floor 가 갱신되지 않는다.
+        log.info("KILL_SWITCH 파일 외부 삭제 감지 — error floor 자동 갱신")
+        kill_switch._set_error_floor()
+
+    _prev_kill_state = current_kill
 
     floor_ts = kill_switch.get_error_floor()
     try:
