@@ -21,7 +21,7 @@ from trading_bot.kis.client import KisClient
 from trading_bot.notify import telegram
 from trading_bot.risk import kill_switch
 from trading_bot.risk.manager import RiskDecision, RiskManager
-from trading_bot.signals import cost_alert, exit_strategy, fundamentals, indicators, prefilter
+from trading_bot.signals import cost_alert, exit_constants, exit_strategy, fundamentals, indicators, prefilter
 from trading_bot.signals.llm import ClaudeSignalClient, LlmDecision
 from trading_bot.store import repo
 
@@ -192,7 +192,7 @@ def run_cycle(
         commands_init.mark_notice_sent()
     summary: dict[str, Any] = {
         "total": 0, "candidates": 0,
-        "buy": 0, "sell": 0, "hold": 0, "errors": 0,
+        "buy": 0, "sell": 0, "hold": 0, "errors_in_cycle": 0,
         "cost_usd": 0.0,
         "orders_submitted": 0, "orders_rejected_by_risk": 0,
         "exits_executed": 0,
@@ -286,7 +286,7 @@ def run_cycle(
             ohlcv = kis.get_daily_ohlcv(code, days=40)
             if len(ohlcv) < 20:
                 log.warning("%s %s: 캔들 부족 (%d개)", code, name, len(ohlcv))
-                summary["errors"] += 1
+                summary["errors_in_cycle"] += 1
                 continue
 
             closes = [c["close"] for c in ohlcv]
@@ -393,7 +393,7 @@ def run_cycle(
             if daily_cost >= daily_limit:
                 log.warning("일일 LLM 비용 한도($%.2f) 도달, %s 스킵", daily_limit, code)
                 cost_alert.maybe_alert_limit(daily_cost, daily_limit, settings.telegram)
-                summary["errors"] += 1
+                summary["errors_in_cycle"] += 1
                 continue
 
             # 쿨다운 프리체크 — risk.check 안의 쿨다운 게이트는 LLM 호출 후에 평가되어
@@ -613,7 +613,7 @@ def run_cycle(
                 })
             except Exception as exc:
                 log.exception("%s %s 주문 실행 실패", code, name)
-                summary["errors"] += 1
+                summary["errors_in_cycle"] += 1
                 repo.insert_order(
                     ts=_now_iso(),
                     code=code, name=name, side=decision.decision,
@@ -632,7 +632,7 @@ def run_cycle(
 
         except Exception as exc:
             log.exception("%s %s 처리 실패", code, name)
-            summary["errors"] += 1
+            summary["errors_in_cycle"] += 1
             repo.insert_error(
                 component="cycle",
                 message=f"{code} {name}: {exc}",
@@ -691,7 +691,7 @@ def run_cycle(
             buy=summary["buy"],
             sell=summary["sell"],
             hold=summary["hold"],
-            errors=summary["errors"],
+            errors=summary["errors_in_cycle"],
             cost_usd=summary["cost_usd"],
         )
     except Exception:
@@ -794,7 +794,7 @@ def _run_exit_checks(
                 kis_order_no=order_no,
                 status="submitted",
                 raw_response=json.dumps(order_result["raw"], ensure_ascii=False)[:2000],
-                reason=f"exit ({decision.tag}): {decision.reason}",
+                reason=exit_constants.format_exit_reason(decision.tag, decision.reason),
             )
             log.info(
                 "✅ 청산 주문 접수 [%s] %s %d주 order_no=%s",
@@ -842,7 +842,7 @@ def _notify_summary(
     # 거래/청산/차단/에러 있을 때는 조용 모드 여부와 무관하게 항상 전송.
     # 장 시작/마감 브리핑은 quiet 와 독립 — main.py 의 별도 크론에서 처리.
     from trading_bot.bot import quiet_mode
-    if quiet_mode.is_active() and not events and summary.get("errors", 0) == 0:
+    if quiet_mode.is_active() and not events and summary.get("errors_in_cycle", 0) == 0:
         log.info("조용 모드 + 이벤트 없음 — 텔레그램 요약 스킵")
         return
 
@@ -856,7 +856,7 @@ def _notify_summary(
         f"어제 대비 {fmt_pct(balance_summary.get('asst_icdc_erng_rt'))}",
         "",
         "*🔍 점검*",
-        f"종목 {summary['total']}개 · 후보 {summary['candidates']}개 · 오류 {summary['errors']}개",
+        f"종목 {summary['total']}개 · 후보 {summary['candidates']}개 · 오류 {summary['errors_in_cycle']}개",
         f"판단: 구매 {summary['buy']} · 판매 {summary['sell']} · 관망 {summary['hold']}",
         f"주문 접수 {summary['orders_submitted']}건 · 안전장치 차단 "
         f"{summary['orders_rejected_by_risk']}건 · 자동 청산 "

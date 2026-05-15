@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+from trading_bot.signals.exit_constants import stop_loss_reason_like_pattern
 from trading_bot.store.db import DB_PATH
 
 log = logging.getLogger(__name__)
@@ -178,7 +179,7 @@ def get_last_stop_loss_ts(code: str) -> str | None:
     with _conn() as conn:
         cur = conn.execute(
             "SELECT ts FROM orders "
-            "WHERE code = ? AND side = 'sell' AND reason LIKE 'exit (stop_loss):%' "
+            f"WHERE code = ? AND side = 'sell' AND reason LIKE '{stop_loss_reason_like_pattern()}' "
             "ORDER BY id DESC LIMIT 1",
             (code,),
         )

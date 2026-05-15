@@ -79,6 +79,9 @@ PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
 
 ## 핵심 디자인 결정 (되돌리지 말 것)
 
+- **상태 파일은 `atomic_io.atomic_write_text` 로만 쓴다.** NAS 강종 시 0바이트 잘림 방지.
+  `trading_bot/utils/atomic_io.py` — tmp 파일에 fsync 후 `os.replace` 원자 교체.
+
 - **시세 조회는 항상 실전 서버.** 모의 서버(openapivts) 국내주식 시세 API 는 불안정
   (500 랜덤). `config.py kis_quote` 는 항상 `KIS_LIVE_*` 키로 초기화. 주문/잔고만
   현재 모드 서버. 이걸 되돌리면 모든 시세 조회가 불안정해짐.

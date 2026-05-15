@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Asia/Seoul 타임존 강제 — 컨테이너 환경변수(TZ=Asia/Seoul)가 없거나
+# 로컬 개발 환경에서도 datetime.now() 가 항상 KST 를 반환하도록.
+os.environ.setdefault("TZ", "Asia/Seoul")
+try:
+    time.tzset()  # Linux/macOS 전용. Windows 에는 없어 AttributeError 무시.
+except AttributeError:
+    pass
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger

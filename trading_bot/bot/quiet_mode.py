@@ -4,6 +4,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from trading_bot.utils.atomic_io import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 # data/ 볼륨 안에 QUIET_MODE 파일이 존재하면 "조용 모드" 활성.
@@ -21,10 +23,9 @@ def is_active() -> bool:
 
 
 def activate(reason: str = "") -> None:
-    QUIET_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    QUIET_MODE_FILE.write_text(
+    atomic_write_text(
+        QUIET_MODE_FILE,
         f"active since {datetime.now().isoformat(timespec='seconds')}\nreason: {reason}\n",
-        encoding="utf-8",
     )
     log.info("조용 모드 활성화: %s", reason)
 

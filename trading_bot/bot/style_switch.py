@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from trading_bot.utils.atomic_io import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -46,8 +48,7 @@ def write_style(style: str) -> None:
     if style == DEFAULT_STYLE:
         clear_style()
         return
-    STYLE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STYLE_FILE.write_text(style, encoding="utf-8")
+    atomic_write_text(STYLE_FILE, style)
     log.info("trade_mode 저장: %s", style)
 
 

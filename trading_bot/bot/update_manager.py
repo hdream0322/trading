@@ -6,6 +6,8 @@ from pathlib import Path
 
 import httpx
 
+from trading_bot.utils.atomic_io import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 # data/ 볼륨에 상태 파일 보관 — 컨테이너 재시작 / 업데이트 후에도 영속.
@@ -46,10 +48,9 @@ def enable_auto() -> None:
 
 
 def disable_auto(reason: str = "") -> None:
-    AUTO_UPDATE_DISABLED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    AUTO_UPDATE_DISABLED_FILE.write_text(
+    atomic_write_text(
+        AUTO_UPDATE_DISABLED_FILE,
         f"disabled at {datetime.now().isoformat(timespec='seconds')}\nreason: {reason}\n",
-        encoding="utf-8",
     )
     log.info("자동 업데이트 비활성화: %s", reason)
 
@@ -121,8 +122,7 @@ def snapshot_current_digest() -> None:
         log.warning("기동 시 digest 스냅샷 실패: %s", exc)
         return
     try:
-        CURRENT_IMAGE_DIGEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CURRENT_IMAGE_DIGEST_FILE.write_text(digest, encoding="utf-8")
+        atomic_write_text(CURRENT_IMAGE_DIGEST_FILE, digest)
         log.info("기동 시 이미지 digest 저장: %s", digest[:24] + "...")
     except OSError as exc:
         log.warning("digest 파일 쓰기 실패: %s", exc)

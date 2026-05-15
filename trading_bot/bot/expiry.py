@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from trading_bot.utils.atomic_io import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -25,19 +27,13 @@ def ensure_issued_date() -> None:
     """
     if ISSUED_FILE.exists():
         return
-    ISSUED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ISSUED_FILE.write_text(
-        datetime.now().isoformat(timespec="seconds"), encoding="utf-8"
-    )
+    atomic_write_text(ISSUED_FILE, datetime.now().isoformat(timespec="seconds"))
     log.info("paper_account_issued 초기 생성: 지금 시각으로 설정")
 
 
 def mark_updated() -> None:
     """자격증명 재로드 시 호출. 만료 카운트다운 리셋."""
-    ISSUED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ISSUED_FILE.write_text(
-        datetime.now().isoformat(timespec="seconds"), encoding="utf-8"
-    )
+    atomic_write_text(ISSUED_FILE, datetime.now().isoformat(timespec="seconds"))
     log.info("paper_account_issued 갱신 — 만료 카운트다운 리셋")
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from trading_bot.utils.atomic_io import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 # data/ 볼륨에 모드 오버라이드 상태 저장. 재시작 / 컨테이너 업데이트 후에도 유지된다.
@@ -27,8 +29,7 @@ def read_override() -> str | None:
 def write_override(mode: str) -> None:
     if mode not in _VALID_MODES:
         raise ValueError(f"잘못된 모드: {mode!r} (paper 또는 live)")
-    MODE_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MODE_OVERRIDE_FILE.write_text(mode, encoding="utf-8")
+    atomic_write_text(MODE_OVERRIDE_FILE, mode)
     log.info("mode override 저장: %s", mode)
 
 

@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from trading_bot.utils.atomic_io import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 # data/ 볼륨 안에 KILL_SWITCH 파일이 존재하면 신규 매수 전체 차단.
@@ -37,13 +39,12 @@ def is_active() -> bool:
 
 
 def activate(reason: str = "", auto: bool = False) -> None:
-    KILL_SWITCH_FILE.parent.mkdir(parents=True, exist_ok=True)
     trigger = "auto" if auto else "manual"
-    KILL_SWITCH_FILE.write_text(
+    atomic_write_text(
+        KILL_SWITCH_FILE,
         f"active since {datetime.now().isoformat(timespec='seconds')}\n"
         f"reason: {reason}\n"
         f"trigger: {trigger}\n",
-        encoding="utf-8",
     )
     log.warning("KILL SWITCH 활성화 [%s]: %s", trigger, reason)
 
@@ -109,10 +110,9 @@ def _record_auto_release() -> None:
 
 def _set_error_floor() -> None:
     try:
-        ERROR_FLOOR_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ERROR_FLOOR_FILE.write_text(
+        atomic_write_text(
+            ERROR_FLOOR_FILE,
             datetime.now().isoformat(timespec="seconds") + "\n",
-            encoding="utf-8",
         )
     except Exception:
         log.exception("에러 카운트 floor 기록 실패")

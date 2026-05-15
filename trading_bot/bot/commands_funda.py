@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_bot.bot.context import BotContext
+from trading_bot.utils.atomic_io import atomic_write_text
 from trading_bot.bot.keyboards import _reply, funda_toggle_keyboard
 
 log = logging.getLogger(__name__)
@@ -28,10 +29,9 @@ def is_enabled(settings_cfg: dict[str, Any]) -> bool:
 
 
 def _activate() -> None:
-    FUNDA_ENABLED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    FUNDA_ENABLED_FILE.write_text(
+    atomic_write_text(
+        FUNDA_ENABLED_FILE,
         f"active since {datetime.now().isoformat(timespec='seconds')}\n",
-        encoding="utf-8",
     )
     log.info("펀더멘털 게이트 활성화 (파일)")
 
