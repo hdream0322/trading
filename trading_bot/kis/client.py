@@ -431,6 +431,55 @@ class KisClient:
             break
         raise RuntimeError(f"hashkey 발급 실패: {last_err}")
 
+    def _find_recent_order(
+        self,
+        code: str,
+        side: str,
+        qty: int,
+        within_sec: int = 60,
+    ) -> dict[str, Any] | None:
+        """최근 N 초 내 동일 (code, side, qty) 주문이 서버에 등록됐는지 조회.
+
+        주문 POST 가 timeout/파싱 실패로 죽었지만 서버엔 접수됐을 가능성에 대비해
+        멱등성 확인용으로 사용. inquire_daily_ccld 로 당일 주문 목록을 받아
+        ord_tmd (HHMMSS) 기준 within_sec 이내 + 매수/매도 + 수량 일치 항목 반환.
+
+        실패해서 RuntimeError 가 나면 그대로 전파 — 호출자가 unknown 으로 처리.
+        """
+        orders = self.inquire_daily_ccld()
+        side_cd = "02" if side == "buy" else "01"  # KIS: 01=매도, 02=매수
+        now = datetime.now()
+        for row in orders:
+            if str(row.get("pdno", "")).strip() != code:
+                continue
+            if str(row.get("sll_buy_dvsn_cd", "")).strip() != side_cd:
+                continue
+            try:
+                row_qty = int(row.get("ord_qty") or 0)
+            except (ValueError, TypeError):
+                row_qty = 0
+            if row_qty != qty:
+                continue
+            # 취소된 주문은 제외 (서버 접수 안 된 것과 동등).
+            if str(row.get("cncl_yn", "")).strip().upper() == "Y":
+                continue
+            ord_tmd = str(row.get("ord_tmd", "")).strip()
+            if len(ord_tmd) != 6 or not ord_tmd.isdigit():
+                continue
+            try:
+                ord_dt = now.replace(
+                    hour=int(ord_tmd[0:2]),
+                    minute=int(ord_tmd[2:4]),
+                    second=int(ord_tmd[4:6]),
+                    microsecond=0,
+                )
+            except ValueError:
+                continue
+            delta = (now - ord_dt).total_seconds()
+            if 0 <= delta <= within_sec:
+                return row
+        return None
+
     def place_market_order(self, code: str, side: str, qty: int) -> dict[str, Any]:
         """국내주식 시장가 주문. side: 'buy' | 'sell'. 주문 모드(paper/live)는 trade_cfg.
 
@@ -456,6 +505,42 @@ class KisClient:
             "ORD_UNPR": "0",
         }
 
+        def _idempotent_recheck(reason: str) -> dict[str, Any]:
+            """POST 실패 시 서버 접수 여부 재확인. 등록돼 있으면 정상 반환, 없으면 raise.
+
+            inquire 자체가 실패하면 unknown 상태로 raise — 호출자는 errors_in_cycle
+            증가 + 텔레그램 경고로 처리해야 한다.
+            """
+            time.sleep(0.5)
+            try:
+                found = self._find_recent_order(code, side, qty, within_sec=60)
+            except Exception as exc:
+                log.error(
+                    "주문 POST 실패 후 재확인 inquire 도 실패 (%s %s %d): %s — 등록 여부 불명",
+                    code, side, qty, exc,
+                )
+                raise RuntimeError(
+                    f"KIS 주문 등록 여부 불명 ({code} {side} {qty}): "
+                    f"POST 실패({reason}) + inquire 실패({exc})"
+                ) from exc
+
+            if found:
+                order_no = str(found.get("odno", ""))
+                log.warning(
+                    "주문 POST 실패했지만 서버에 등록된 주문 발견 — order_no=%s (%s %s %d, 원인=%s)",
+                    order_no, code, side, qty, reason,
+                )
+                return {
+                    "order_no": order_no,
+                    "order_time": str(found.get("ord_tmd", "")),
+                    "raw": found,
+                }
+            log.error(
+                "주문 POST 실패, 서버에도 미등록 — 안전 (%s %s %d, 원인=%s)",
+                code, side, qty, reason,
+            )
+            raise RuntimeError(f"KIS 주문 실패 ({code} {side} {qty}): {reason}")
+
         # 게이트웨이 rate-limit만 한정해서 재시도 (주문 엔진 도달 전 거절이라 재실행 안전).
         # 실제 주문 처리 단계 에러(잔고부족, 시장 마감 등)는 절대 재시도 금지.
         max_retries = 3
@@ -463,26 +548,33 @@ class KisClient:
         for attempt in range(1, max_retries + 1):
             hashkey = self.get_hashkey(body)
             self._throttle(cfg)
-            resp = self._trade_client.post(
-                "/uapi/domestic-stock/v1/trading/order-cash",
-                json=body,
-                headers={
-                    "authorization": f"Bearer {get_access_token(cfg)}",
-                    "appkey": cfg.app_key,
-                    "appsecret": cfg.app_secret,
-                    "tr_id": tr_id,
-                    "custtype": "P",
-                    "hashkey": hashkey,
-                    "content-type": "application/json; charset=utf-8",
-                },
-            )
+            try:
+                resp = self._trade_client.post(
+                    "/uapi/domestic-stock/v1/trading/order-cash",
+                    json=body,
+                    headers={
+                        "authorization": f"Bearer {get_access_token(cfg)}",
+                        "appkey": cfg.app_key,
+                        "appsecret": cfg.app_secret,
+                        "tr_id": tr_id,
+                        "custtype": "P",
+                        "hashkey": hashkey,
+                        "content-type": "application/json; charset=utf-8",
+                    },
+                )
+            except (httpx.ReadTimeout, httpx.ConnectError, httpx.WriteTimeout,
+                    httpx.RemoteProtocolError, httpx.PoolTimeout) as exc:
+                # 네트워크 단계 실패 — 서버엔 접수됐을 가능성 있음. 재확인 가드.
+                return _idempotent_recheck(f"네트워크 오류: {type(exc).__name__}: {exc}")
+
             try:
                 data = resp.json()
             except Exception:
                 # body 본문 노출 금지 — KIS 가 디버그 응답에 인증 정보를 echo 할
                 # 가능성 차단. errors 테이블/CSV export 로 흘러갈 수 있음.
-                raise RuntimeError(
-                    f"KIS 주문 응답 파싱 실패: status={resp.status_code}"
+                # 응답 파싱 실패도 서버 접수 여부 불확실 → 재확인 가드.
+                return _idempotent_recheck(
+                    f"응답 파싱 실패: status={resp.status_code}"
                 )
 
             if resp.status_code == 200 and data.get("rt_cd") == "0":
