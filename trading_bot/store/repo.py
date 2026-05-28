@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, Callable, TypeVar
 
@@ -390,6 +390,34 @@ def monthly_llm_cost_usd() -> float:
             (month_prefix,),
         )
         return float(cur.fetchone()[0])
+
+
+def recent_daily_llm_cost_avg_usd(lookback_days: int = 7) -> float | None:
+    """최근 N 거래일(오늘 제외) 평균 일일 LLM 비용.
+
+    비용이 발생한 날만 평균에 포함 (주말/장 휴일 0 으로 평균이 희석되는 것 방지).
+    데이터가 하나도 없으면 None.
+    """
+    if lookback_days <= 0:
+        return None
+    today = datetime.now().date()
+    start = (today - timedelta(days=lookback_days)).isoformat()
+    end = today.isoformat()
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT substr(ts, 1, 10) AS d, SUM(llm_cost_usd) "
+            "FROM signals "
+            "WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) < ? "
+            "  AND llm_cost_usd IS NOT NULL "
+            "GROUP BY d "
+            "HAVING SUM(llm_cost_usd) > 0",
+            (start, end),
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return None
+    total = sum(float(r[1] or 0.0) for r in rows)
+    return total / len(rows)
 
 
 def get_recent_pnl_daily(days: int = 7) -> list[dict[str, Any]]:

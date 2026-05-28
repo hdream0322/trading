@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from trading_bot.notify import telegram
+from trading_bot.store import repo
 
 log = logging.getLogger(__name__)
 
@@ -44,11 +45,20 @@ def maybe_warn(
     """누적 비용이 경고선을 처음 넘는 순간 1회 텔레그램 알림."""
     if warn_threshold <= 0 or daily_cost < warn_threshold:
         return
+    try:
+        baseline = repo.recent_daily_llm_cost_avg_usd(lookback_days=7)
+    except Exception:
+        log.exception("최근 평균 LLM 비용 조회 실패")
+        baseline = None
+    if baseline and baseline > 0:
+        baseline_str = f"평소(최근 7일 평균 ${baseline:.4f})"
+    else:
+        baseline_str = "평소"
     msg = (
         f"⚠️ *AI 비용 경고선 돌파*\n"
         f"오늘 누적 *${daily_cost:.4f}* / 경고선 ${warn_threshold:.2f} / "
         f"한도 ${daily_limit:.2f}\n"
-        f"평소(하루 $0.10 안쪽) 보다 호출이 많아요. `/cost` 로 확인해 보세요."
+        f"{baseline_str} 보다 호출이 많아요. `/cost` 로 확인해 보세요."
     )
     _fire_once("llm_cost_warned", telegram_cfg, msg)
 
