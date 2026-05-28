@@ -103,7 +103,13 @@ def send_close_briefing(settings: Settings, kis: KisClient) -> None:
     risk_reasons = repo.get_today_risk_rejection_reasons()
     recent_pnl = repo.get_recent_pnl_daily(days=5)
 
-    submitted = [o for o in orders if o.get("status") == "submitted"]
+    # 사이클 종료 후 fill_tracker 가 submitted → filled/partial 로 갱신하므로
+    # "오늘 접수된 주문" 은 체결 여부 무관하게 합산해야 한다. cancelled 는 미체결
+    # 후 자동 취소된 경우라 접수 카운트에 포함 (사용자 관점에선 시도했던 주문).
+    submitted = [
+        o for o in orders
+        if o.get("status") in ("submitted", "filled", "partial", "cancelled")
+    ]
     rejected = [o for o in orders if o.get("status") == "rejected"]
     errored = [o for o in orders if o.get("status") == "error"]
 
