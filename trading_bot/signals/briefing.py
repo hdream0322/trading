@@ -65,7 +65,7 @@ def send_open_briefing(settings: Settings, kis: KisClient) -> None:
             name = pos.get("name", "")
             qty = int(pos.get("qty", 0))
             cur_price = int(pos.get("cur_price", 0))
-            pnl_pct = pos.get("evlu_pfls_rt")
+            pnl_pct = pos.get("pnl_pct")
             pnl_emoji = "🟢" if (pnl_pct is not None and float(pnl_pct) >= 0) else "🔴"
             lines.append("")
             lines.append(f"{pnl_emoji} *{name}* (`{code}`)")
