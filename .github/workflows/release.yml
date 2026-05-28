@@ -20,7 +20,10 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 태그 annotation + 이전 태그 비교용
+          fetch-depth: 0  # 이전 태그 비교용
+          fetch-tags: true  # annotated 태그 본문(-m) 을 릴리스 노트로 가져오기 위함.
+                            # 이게 없으면 lightweight 로 체크아웃돼 %(contents) 가
+                            # 비고, fallback 으로 커밋 메시지가 들어간다 (v0.7.7 사고).
 
       - name: Build release body from tag annotation
         env:
