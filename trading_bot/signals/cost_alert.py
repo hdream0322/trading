@@ -59,9 +59,7 @@ def maybe_warn(
         f"오늘 누적 *${daily_cost:.4f}* / 경고선 ${warn_threshold:.2f} / "
         f"한도 ${daily_limit:.2f}\n"
         f"{baseline_str} 보다 호출이 많아요.\n\n"
-        f"• 자세히: `/cost`\n"
-        f"• 경고선 조정: `/set llm.daily_cost_warn_usd <금액>`\n"
-        f"• 한도 조정: `/set llm.daily_cost_limit_usd <금액>`"
+        f"• 자세히: `/cost`"
     )
     _fire_once("llm_cost_warned", telegram_cfg, msg)
 

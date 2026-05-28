@@ -251,12 +251,16 @@ def cmd_cost(ctx: BotContext, args: list[str]) -> dict[str, Any]:
     except Exception as exc:
         return _reply(f"❌ 비용 조회 실패\n`{escape_markdown(str(exc))}`")
     limit = float(ctx.settings.llm.get("daily_cost_limit_usd", 5.0))
+    warn = float(ctx.settings.llm.get("daily_cost_warn_usd", 1.0))
     pct = (daily_cost / limit * 100) if limit > 0 else 0
     return _reply(
         f"*오늘 AI 분석 비용*\n"
-        f"사용: `${daily_cost:.4f}` / 한도 `${limit:.2f}` ({pct:.1f}%)\n\n"
+        f"사용: `${daily_cost:.4f}` / 경고선 `${warn:.2f}` / 한도 `${limit:.2f}` ({pct:.1f}%)\n\n"
         f"_AI (Claude)가 종목별 매매 판단을 내릴 때마다 청구됩니다._\n"
-        f"_한도에 도달하면 남은 시간동안 AI 판단 없이 관망합니다._"
+        f"_한도에 도달하면 남은 시간동안 AI 판단 없이 관망합니다._\n\n"
+        f"*조정*\n"
+        f"• 경고선: `/set llm.daily_cost_warn_usd <금액>`\n"
+        f"• 한도: `/set llm.daily_cost_limit_usd <금액>`"
     )
 
 
