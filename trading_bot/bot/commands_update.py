@@ -184,14 +184,6 @@ def _apply_update(ctx: BotContext) -> dict[str, Any]:
         "⏳ 약 30~60초 후 자동으로 재시작됩니다.",
     ]
 
-    summary = _summarize_release_body((info or {}).get("body") or "")
-    if summary:
-        lines.append("")
-        lines.append("📋 *이번 변경 사항*")
-        lines.append("```")
-        lines.append(summary)
-        lines.append("```")
-
     return _reply("\n".join(lines))
 
 
