@@ -562,58 +562,121 @@ def update_signal_forward_return(
         )
 
 
+def _fetch_evaluated_signals_dedup() -> list[dict[str, Any]]:
+    """평가 완료된 buy/sell signal 을 (code, date(ts), decision) 단위로 dedupe.
+
+    같은 종목·같은 날·같은 방향에 10분 사이클마다 같은 신호가 반복 적재되면
+    표본이 16배 부풀려져 적중률을 왜곡한다. 그 날 첫 신호(MIN(id)) 1건만 채택.
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            """SELECT id, ts, code, name, decision, confidence,
+                      realized_return_pct, llm_reasoning
+                 FROM signals
+                WHERE decision IN ('buy', 'sell')
+                  AND realized_return_pct IS NOT NULL
+                  AND id IN (
+                    SELECT MIN(id) FROM signals
+                     WHERE decision IN ('buy', 'sell')
+                       AND realized_return_pct IS NOT NULL
+                     GROUP BY code, date(ts), decision
+                  )"""
+        )
+        rows = cur.fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r[0], "ts": r[1], "code": r[2], "name": r[3],
+            "decision": r[4], "confidence": float(r[5] or 0),
+            "realized_return_pct": float(r[6]),
+            "llm_reasoning": r[7] or "",
+        })
+    return out
+
+
+def _hit(decision: str, ret: float) -> bool:
+    return (decision == "buy" and ret >= 1.0) or (decision == "sell" and ret <= -1.0)
+
+
 def get_accuracy_by_confidence_bucket() -> list[dict[str, Any]]:
-    """confidence 구간별 적중률/평균수익률/건수 집계.
+    """confidence 구간별 적중률/평균수익률. (code, date, decision) dedupe 후 집계.
 
     "적중" 정의:
       - buy: realized_return_pct >= +1%
       - sell: realized_return_pct <= -1%
-    구간: [0.75, 0.80), [0.80, 0.85), [0.85, 0.90), [0.90, 1.01)
+    구간: [0.65, 0.75), [0.75, 0.80), [0.80, 0.85), [0.85, 0.90), [0.90, 1.01)
+    각 구간에 buy/sell 별 카운트·적중률·평균수익률 함께 반환.
     """
-    buckets = [(0.75, 0.80), (0.80, 0.85), (0.85, 0.90), (0.90, 1.01)]
+    buckets = [(0.65, 0.75), (0.75, 0.80), (0.80, 0.85), (0.85, 0.90), (0.90, 1.01)]
+    rows = _fetch_evaluated_signals_dedup()
     out: list[dict[str, Any]] = []
-    with _conn() as conn:
-        for low, high in buckets:
-            cur = conn.execute(
-                """SELECT decision, realized_return_pct
-                     FROM signals
-                    WHERE decision IN ('buy', 'sell')
-                      AND confidence >= ? AND confidence < ?
-                      AND realized_return_pct IS NOT NULL""",
-                (low, high),
-            )
-            rows = cur.fetchall()
-            if not rows:
-                out.append({
-                    "low": low, "high": high,
-                    "count": 0, "hit_rate": 0.0, "avg_return": 0.0,
-                })
-                continue
-            total = len(rows)
-            hits = 0
-            total_return = 0.0
-            for decision, ret in rows:
-                r = float(ret or 0)
-                total_return += r
-                if decision == "buy" and r >= 1.0:
-                    hits += 1
-                elif decision == "sell" and r <= -1.0:
-                    hits += 1
-            out.append({
-                "low": low, "high": high,
-                "count": total,
-                "hit_rate": hits / total * 100.0,
-                "avg_return": total_return / total,
-            })
+    for low, high in buckets:
+        in_bucket = [r for r in rows if low <= r["confidence"] < high]
+        entry: dict[str, Any] = {
+            "low": low, "high": high,
+            "count": len(in_bucket),
+            "hit_rate": 0.0, "avg_return": 0.0,
+            "by_decision": {"buy": None, "sell": None},
+        }
+        if in_bucket:
+            hits = sum(1 for r in in_bucket if _hit(r["decision"], r["realized_return_pct"]))
+            entry["hit_rate"] = hits / len(in_bucket) * 100.0
+            entry["avg_return"] = sum(r["realized_return_pct"] for r in in_bucket) / len(in_bucket)
+            for d in ("buy", "sell"):
+                sub = [r for r in in_bucket if r["decision"] == d]
+                if sub:
+                    h = sum(1 for r in sub if _hit(d, r["realized_return_pct"]))
+                    entry["by_decision"][d] = {
+                        "count": len(sub),
+                        "hit_rate": h / len(sub) * 100.0,
+                        "avg_return": sum(r["realized_return_pct"] for r in sub) / len(sub),
+                    }
+        out.append(entry)
     return out
 
 
+def get_accuracy_by_decision() -> dict[str, dict[str, Any]]:
+    """buy/sell 전체 집계 (dedupe 후). 구간별 표본이 적을 때 의사결정 단위 큰 그림."""
+    rows = _fetch_evaluated_signals_dedup()
+    out: dict[str, dict[str, Any]] = {"buy": {"count": 0, "hit_rate": 0.0, "avg_return": 0.0},
+                                       "sell": {"count": 0, "hit_rate": 0.0, "avg_return": 0.0}}
+    for d in ("buy", "sell"):
+        sub = [r for r in rows if r["decision"] == d]
+        if not sub:
+            continue
+        h = sum(1 for r in sub if _hit(d, r["realized_return_pct"]))
+        out[d] = {
+            "count": len(sub),
+            "hit_rate": h / len(sub) * 100.0,
+            "avg_return": sum(r["realized_return_pct"] for r in sub) / len(sub),
+        }
+    return out
+
+
+def get_accuracy_top_codes(limit: int = 3) -> list[dict[str, Any]]:
+    """평가 데이터에서 비중 높은 종목 top N. 종목 편향(특정 종목이 통계 좌우) 노출용."""
+    rows = _fetch_evaluated_signals_dedup()
+    if not rows:
+        return []
+    total = len(rows)
+    by_code: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        c = r["code"]
+        entry = by_code.setdefault(c, {"code": c, "name": r["name"] or "", "count": 0, "sum_return": 0.0})
+        entry["count"] += 1
+        entry["sum_return"] += r["realized_return_pct"]
+    items = sorted(by_code.values(), key=lambda x: x["count"], reverse=True)[:limit]
+    for it in items:
+        it["share_pct"] = it["count"] / total * 100.0
+        it["avg_return"] = it["sum_return"] / it["count"]
+    return items
+
+
 def get_accuracy_by_cross_check() -> dict[str, dict[str, Any]]:
-    """교차검증 태그별 사후 수익률 집계.
+    """교차검증 태그별 사후 수익률 집계. (code, date) dedupe 후.
 
     [DIRECTION_CONFLICT] / [LLM_HOLD] 태그가 붙은 signal 의 사후 수익률이
-    prefilter 방향으로 봤을 때 맞았는지 / 틀렸는지 확인 — LLM vs prefilter
-    중 누가 더 정확했는지 판단 근거.
+    prefilter 방향으로 봤을 때 맞았는지 / 틀렸는지 확인.
     """
     result: dict[str, dict[str, Any]] = {
         "DIRECTION_CONFLICT": {"count": 0, "avg_return": 0.0, "sum_return": 0.0},
@@ -624,7 +687,13 @@ def get_accuracy_by_cross_check() -> dict[str, dict[str, Any]]:
             """SELECT llm_reasoning, realized_return_pct
                  FROM signals
                 WHERE realized_return_pct IS NOT NULL
-                  AND llm_reasoning LIKE '[%'""",
+                  AND llm_reasoning LIKE '[%'
+                  AND id IN (
+                    SELECT MIN(id) FROM signals
+                     WHERE realized_return_pct IS NOT NULL
+                       AND llm_reasoning LIKE '[%'
+                     GROUP BY code, date(ts), substr(llm_reasoning, 1, 20)
+                  )""",
         )
         for reasoning, ret in cur.fetchall():
             if not reasoning or ret is None:

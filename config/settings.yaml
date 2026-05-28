@@ -130,7 +130,7 @@ trade_modes:
       rsi_buy_below: 55
       rsi_sell_above: 60
       min_volume_ratio: 0.6
-      trend_filter_enabled: false   # 추세 필터 끔 — 횡보·역추세 진입 허용
+      trend_filter_enabled: true    # 떨어지는 칼날 차단 (2026-05-28 buy 적중률 11% 분석 후 켬)
     risk:
       cooldown_minutes: 10
       post_stop_loss_cooldown_min: 30

@@ -265,12 +265,18 @@ def cmd_cost(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
 
 def cmd_accuracy(ctx: BotContext, args: list[str]) -> dict[str, Any]:
-    """AI 판단 사후 정확도 — confidence 구간별 적중률 + 교차검증 태그 집계.
+    """AI 판단 사후 정확도 — confidence 구간별 + buy/sell 분리 + 종목 집중도.
+
+    표본은 (종목, 날짜, decision) 단위로 dedupe — 같은 종목에 사이클마다
+    반복 적재되는 같은 방향 신호를 1건으로 압축. raw count 가 16배 부풀려져
+    통계를 왜곡하던 문제를 해결.
 
     적중 정의: buy → 5 거래일 뒤 +1% 이상, sell → -1% 이하.
     """
     try:
         buckets = repo.get_accuracy_by_confidence_bucket()
+        by_decision = repo.get_accuracy_by_decision()
+        top_codes = repo.get_accuracy_top_codes(limit=3)
         cross = repo.get_accuracy_by_cross_check()
     except Exception as exc:
         return _reply(f"❌ 정확도 조회 실패\n`{escape_markdown(str(exc))}`")
@@ -285,22 +291,53 @@ def cmd_accuracy(ctx: BotContext, args: list[str]) -> dict[str, Any]:
 
     lines = [
         "*AI 판단 적중률 (사후 검증)*",
-        "_buy/sell 판단 5 거래일 뒤의 수익률 기반_",
-        f"_총 평가 건수: {total}건_",
+        "_같은 종목·같은 날 같은 방향 신호는 1건으로 합산_",
+        f"_총 의사결정: {total}건_",
         "",
-        "*확신도 구간별 적중률*",
+        "*buy / sell 전체*",
     ]
-    for b in buckets:
-        if b["count"] == 0:
+    for d, label in (("buy", "구매"), ("sell", "판매")):
+        info = by_decision.get(d, {"count": 0})
+        if info["count"] == 0:
+            lines.append(f"- {label}: 없음")
+        else:
             lines.append(
-                f"- `{int(b['low']*100)}~{int(b['high']*100)}%` 없음"
+                f"- {label}: {info['count']}건 · "
+                f"적중 {info['hit_rate']:.0f}% · "
+                f"평균 {info['avg_return']:+.2f}%"
             )
+
+    lines += ["", "*확신도 구간별*"]
+    for b in buckets:
+        rng = f"`{int(b['low']*100)}~{int(b['high']*100)}%`"
+        if b["count"] == 0:
+            lines.append(f"- {rng} 없음")
             continue
+        sub = []
+        for d, label in (("buy", "B"), ("sell", "S")):
+            di = b["by_decision"].get(d)
+            if di:
+                sub.append(f"{label}{di['count']} {di['hit_rate']:.0f}%")
+        sub_str = f" ({', '.join(sub)})" if sub else ""
         lines.append(
-            f"- `{int(b['low']*100)}~{int(b['high']*100)}%` "
-            f"{b['count']}건 · 적중 {b['hit_rate']:.0f}% · "
-            f"평균 {b['avg_return']:+.2f}%"
+            f"- {rng} {b['count']}건 · 적중 {b['hit_rate']:.0f}% · "
+            f"평균 {b['avg_return']:+.2f}%{sub_str}"
         )
+
+    if top_codes:
+        top1_share = top_codes[0]["share_pct"]
+        lines += ["", "*종목 집중도*"]
+        for c in top_codes:
+            nm = escape_markdown(c["name"])
+            lines.append(
+                f"- {nm} `{c['code']}` "
+                f"{c['count']}건 ({c['share_pct']:.0f}%) · "
+                f"평균 {c['avg_return']:+.2f}%"
+            )
+        if top1_share >= 30:
+            lines.append(
+                f"⚠️ 상위 1종목이 {top1_share:.0f}% 차지 — 통계가 한 종목 추세에 끌려갈 수 있어요"
+            )
 
     conflict = cross.get("DIRECTION_CONFLICT", {})
     hold = cross.get("LLM_HOLD", {})
@@ -318,12 +355,27 @@ def cmd_accuracy(ctx: BotContext, args: list[str]) -> dict[str, Any]:
                 f"평균 {hold['avg_return']:+.2f}%"
             )
         lines.append(
-            "_(prefilter 기준 수익률. 수치가 양수면 프리필터 방향이 맞았다는 뜻.)_"
+            "_(prefilter 기준 수익률. 양수면 프리필터 방향이 맞았다는 뜻.)_"
         )
 
     lines.append("")
-    lines.append("적중률이 50% 근처면 AI 가 덜 맞추는 거예요.")
-    lines.append("그러면 `settings.yaml` 의 `confidence_threshold` 를 올려보세요.")
+    if total < 30:
+        lines.append("_표본이 적어요. 30건 이상 쌓이면 안내가 더 정확해져요._")
+    else:
+        buy_cnt = by_decision.get("buy", {}).get("count", 0)
+        buy_hit = by_decision.get("buy", {}).get("hit_rate", 0.0)
+        sell_cnt = by_decision.get("sell", {}).get("count", 0)
+        sell_hit = by_decision.get("sell", {}).get("hit_rate", 0.0)
+        tips: list[str] = []
+        if buy_cnt >= 10 and buy_hit < 30:
+            tips.append("• 구매 적중률 낮음 → prefilter 임계 좁히기 (`rsi_buy_below` 낮춤)")
+        if sell_cnt >= 10 and sell_hit < 30:
+            tips.append("• 판매 적중률 낮음 → 추세 필터·청산 규칙 점검")
+        if tips:
+            lines.append("*제안*")
+            lines.extend(tips)
+        else:
+            lines.append("_buy/sell 모두 안정적. 큰 변경 불필요._")
     return _reply("\n".join(lines))
 
 
