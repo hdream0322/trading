@@ -322,8 +322,8 @@ def cmd_accuracy(ctx: BotContext, args: list[str]) -> dict[str, Any]:
         )
 
     lines.append("")
-    lines.append("_적중률이 50% 근처면 AI 가 덜 맞추는 거예요._")
-    lines.append("_그러면 settings.yaml 의 confidence_threshold 를 올려보세요._")
+    lines.append("적중률이 50% 근처면 AI 가 덜 맞추는 거예요.")
+    lines.append("그러면 `settings.yaml` 의 `confidence_threshold` 를 올려보세요.")
     return _reply("\n".join(lines))
 
 
