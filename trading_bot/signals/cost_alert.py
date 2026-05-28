@@ -58,7 +58,10 @@ def maybe_warn(
         f"⚠️ *AI 비용 경고선 돌파*\n"
         f"오늘 누적 *${daily_cost:.4f}* / 경고선 ${warn_threshold:.2f} / "
         f"한도 ${daily_limit:.2f}\n"
-        f"{baseline_str} 보다 호출이 많아요. `/cost` 로 확인해 보세요."
+        f"{baseline_str} 보다 호출이 많아요.\n\n"
+        f"• 자세히: `/cost`\n"
+        f"• 경고선 조정: `/set llm.daily_cost_warn_usd <금액>`\n"
+        f"• 한도 조정: `/set llm.daily_cost_limit_usd <금액>`"
     )
     _fire_once("llm_cost_warned", telegram_cfg, msg)
 
@@ -75,7 +78,8 @@ def maybe_alert_limit(
         f"🛑 *AI 비용 한도 도달 — LLM 호출 차단*\n"
         f"오늘 누적 *${daily_cost:.4f}* / 한도 ${daily_limit:.2f}\n"
         f"오늘 남은 사이클은 신규 매수 판단이 멈춰요. 손절·익절·트레일링 같은 "
-        f"기계적 청산은 그대로 동작.\n"
-        f"확인: `/cost` · 한도 조정: `settings.yaml llm.daily_cost_limit_usd`"
+        f"기계적 청산은 그대로 동작.\n\n"
+        f"• 자세히: `/cost`\n"
+        f"• 한도 조정: `/set llm.daily_cost_limit_usd <금액>`"
     )
     _fire_once("llm_cost_limit", telegram_cfg, msg)
