@@ -167,6 +167,41 @@ def delete_message(cfg: TelegramConfig, message_id: int) -> bool:
         return False
 
 
+def set_message_reaction(
+    cfg: TelegramConfig,
+    message_id: int,
+    emoji: str | None = None,
+    is_big: bool = False,
+) -> bool:
+    """메시지에 이모지 반응 추가/교체. emoji=None 이면 반응 제거.
+
+    Bot API 7.0+ 의 setMessageReaction. 일반 봇은 무료 이모지 한 종류만 가능
+    (Premium 봇은 여러 개). 허용 이모지: 👍 👎 ❤ 🔥 🎉 👀 👌 💔 등.
+    실패해도 사용자 흐름에 지장 없으니 조용히 False 만 반환 (warning 안 띄움).
+    """
+    reaction: list[dict[str, Any]] = []
+    if emoji:
+        reaction = [{"type": "emoji", "emoji": emoji}]
+    payload: dict[str, Any] = {
+        "chat_id": cfg.chat_id,
+        "message_id": message_id,
+        "reaction": reaction,
+        "is_big": is_big,
+    }
+    try:
+        resp = _client.post(_api_url(cfg, "setMessageReaction"), json=payload)
+        if resp.status_code != 200:
+            log.debug(
+                "Telegram setMessageReaction 실패 [%s]: %s",
+                resp.status_code, resp.text[:200],
+            )
+            return False
+        return True
+    except Exception as exc:
+        log.debug("Telegram setMessageReaction 예외: %s", exc)
+        return False
+
+
 def send_long(
     cfg: TelegramConfig,
     text: str,

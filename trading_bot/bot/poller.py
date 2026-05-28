@@ -128,6 +128,17 @@ class TelegramPoller:
             fail_count = 0
             should_delete_original = False
 
+            # 접수 표시 — 사용자 메시지에 👀 반응. 처리 끝나면 👍/💔 로 교체.
+            # 응답이 늦더라도 "보고 있다" 는 즉각 피드백.
+            user_msg_id = msg.get("message_id")
+            if user_msg_id and command_lines:
+                try:
+                    telegram.set_message_reaction(
+                        self.ctx.settings.telegram, int(user_msg_id), "👀"
+                    )
+                except Exception:
+                    log.debug("👀 반응 추가 실패", exc_info=True)
+
             for idx, line in enumerate(command_lines, start=1):
                 parts = line.split()
                 cmd = parts[0].split("@")[0].lower()  # /help@bot_name → /help
@@ -219,6 +230,19 @@ class TelegramPoller:
                         )
                     except Exception:
                         log.exception("원본 메시지 삭제 실패")
+            else:
+                # 시크릿 삭제 케이스가 아니면 👀 → 결과 이모지로 교체.
+                # 전부 성공 👍, 하나라도 실패 💔.
+                if user_msg_id and command_lines:
+                    final_emoji = "👍" if fail_count == 0 else "💔"
+                    try:
+                        telegram.set_message_reaction(
+                            self.ctx.settings.telegram,
+                            int(user_msg_id),
+                            final_emoji,
+                        )
+                    except Exception:
+                        log.debug("최종 반응 교체 실패", exc_info=True)
             return
 
         # Callback query (inline 버튼 탭)
