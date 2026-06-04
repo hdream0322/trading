@@ -133,7 +133,7 @@ class KisClient:
             # "초당 거래건수 초과"는 대기 후 재시도하면 해결되는 과도성 에러.
             is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
             if is_rate_limit and attempt < max_retries:
-                backoff = 0.5 * attempt
+                backoff = 1.5 * attempt
                 log.warning(
                     "시세 조회 rate limit (%s), %.1f초 대기 후 재시도 %d/%d",
                     code, backoff, attempt, max_retries,
@@ -215,7 +215,7 @@ class KisClient:
 
             is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
             if is_rate_limit and attempt < max_retries:
-                backoff = 0.5 * attempt
+                backoff = 1.5 * attempt
                 log.warning(
                     "종목명 조회 rate limit (%s), %.1f초 대기 후 재시도 %d/%d",
                     code, backoff, attempt, max_retries,
@@ -310,7 +310,7 @@ class KisClient:
 
             is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
             if is_rate_limit and attempt < max_retries:
-                backoff = 0.5 * attempt
+                backoff = 1.5 * attempt
                 log.warning(
                     "재무비율 조회 rate limit (%s), %.1f초 대기 후 재시도 %d/%d",
                     code, backoff, attempt, max_retries,
@@ -387,7 +387,7 @@ class KisClient:
 
             is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
             if (is_rate_limit or resp.status_code >= 500) and attempt < max_retries:
-                wait = 0.5 * attempt
+                wait = 1.5 * attempt
                 log.warning("일봉 조회 재시도 (%s) %s after %.1fs", code, last_err, wait)
                 time.sleep(wait)
                 continue
@@ -424,7 +424,7 @@ class KisClient:
             last_err = f"status={resp.status_code} msg1={msg}"
 
             if "초당" in (msg or "") and attempt < max_retries:
-                wait = 0.5 * attempt
+                wait = 1.5 * attempt
                 log.warning("hashkey rate limit, %.1fs 후 재시도 %d/%d", wait, attempt, max_retries)
                 time.sleep(wait)
                 continue
@@ -591,7 +591,7 @@ class KisClient:
 
             # rate limit만 재시도 대상. 그 외는 바로 예외.
             if "초당" in msg and attempt < max_retries:
-                wait = 0.5 * attempt
+                wait = 1.5 * attempt
                 log.warning(
                     "주문 rate limit (%s %s %d), %.1fs 후 재시도 %d/%d",
                     code, side, qty, wait, attempt, max_retries,
@@ -671,7 +671,7 @@ class KisClient:
 
             is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
             if (is_rate_limit or resp.status_code >= 500) and attempt < max_retries:
-                wait = 0.5 * attempt
+                wait = attempt * 1.5
                 log.warning("잔고 조회 재시도 %s, %.1fs 대기", last_err, wait)
                 time.sleep(wait)
                 continue
@@ -753,7 +753,7 @@ class KisClient:
 
             is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
             if is_rate_limit and attempt < max_retries:
-                wait = 0.5 * attempt
+                wait = 1.5 * attempt
                 log.warning(
                     "주문 취소 rate limit (%s), %.1fs 후 재시도 %d/%d",
                     order_no, wait, attempt, max_retries,
@@ -861,7 +861,7 @@ class KisClient:
 
             is_rate_limit = "초당" in (msg or "") or msg_cd in {"EGW00201", "EGW00121"}
             if (is_rate_limit or resp.status_code >= 500) and attempt < max_retries:
-                wait = 0.5 * attempt
+                wait = 1.5 * attempt
                 log.warning("체결 조회 재시도 %s, %.1fs 대기", last_err, wait)
                 time.sleep(wait)
                 continue

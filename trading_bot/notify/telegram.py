@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -102,6 +103,21 @@ def get_updates(
             params=params,
             timeout=httpx.Timeout(float(timeout + 10), connect=5.0),
         )
+        if resp.status_code == 429:
+            # Too Many Requests — retry_after 만큼 대기. 즉시 재시도하면 폭주.
+            retry_after = 5
+            try:
+                retry_after = int(resp.json().get("parameters", {}).get("retry_after", 5))
+            except Exception:
+                pass
+            log.warning("Telegram getUpdates rate limit (429), %ds 대기", retry_after)
+            time.sleep(retry_after)
+            return []
+        if resp.status_code >= 500:
+            # 5xx 서버 오류 — 즉시 재시도하면 수십 번 폭주하므로 일정 시간 대기.
+            log.warning("Telegram getUpdates 서버 오류 [%s], 5s 대기", resp.status_code)
+            time.sleep(5)
+            return []
         if resp.status_code != 200:
             log.warning("Telegram getUpdates 실패 [%s]: %s", resp.status_code, resp.text)
             return []
