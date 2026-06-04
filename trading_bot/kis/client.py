@@ -648,11 +648,29 @@ class KisClient:
         last_err = ""
         for attempt in range(1, max_retries + 1):
             self._throttle(cfg)
-            resp = self._trade_client.get(
-                "/uapi/domestic-stock/v1/trading/inquire-balance",
-                params=params,
-                headers=self._headers(cfg, tr_id),
-            )
+            try:
+                resp = self._trade_client.get(
+                    "/uapi/domestic-stock/v1/trading/inquire-balance",
+                    params=params,
+                    headers=self._headers(cfg, tr_id),
+                )
+            except (
+                httpx.ReadTimeout,
+                httpx.ConnectError,
+                httpx.WriteTimeout,
+                httpx.RemoteProtocolError,
+            ) as net_exc:
+                last_err = f"network={net_exc}"
+                if attempt < max_retries:
+                    wait = attempt * 1.5
+                    log.warning(
+                        "잔고 조회 네트워크 오류, %.1fs 대기 후 재시도 %d/%d: %s",
+                        wait, attempt, max_retries, net_exc,
+                    )
+                    time.sleep(wait)
+                    continue
+                break
+
             body: dict[str, Any] | None
             try:
                 body = resp.json()
