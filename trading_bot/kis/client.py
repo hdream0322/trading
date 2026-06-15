@@ -56,8 +56,12 @@ class KisClient:
             self._live_min_interval, 1.0 / self._live_min_interval,
             self._paper_min_interval, 1.0 / self._paper_min_interval,
         )
-        self._trade_client = httpx.Client(base_url=trade_cfg.base_url, timeout=10)
-        self._quote_client = httpx.Client(base_url=self.quote_cfg.base_url, timeout=10)
+        # connect 는 짧게 (IPv6 블랙홀/네트워크 단절은 5초 내 실패시키고 재시도),
+        # read 는 길게 (KIS 서버가 가끔 응답이 10초를 넘김 — flat 10초면 정상 응답도
+        # ReadTimeout 으로 잘려 사이클이 중단됨).
+        _timeout = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
+        self._trade_client = httpx.Client(base_url=trade_cfg.base_url, timeout=_timeout)
+        self._quote_client = httpx.Client(base_url=self.quote_cfg.base_url, timeout=_timeout)
         self._last_request: dict[str, float] = {
             trade_cfg.base_url: 0.0,
             self.quote_cfg.base_url: 0.0,
@@ -110,11 +114,24 @@ class KisClient:
         while attempt < max_retries:
             attempt += 1
             self._throttle(cfg)
-            resp = self._quote_client.get(
-                "/uapi/domestic-stock/v1/quotations/inquire-price",
-                params=params,
-                headers=self._headers(cfg, tr_id),
-            )
+            try:
+                resp = self._quote_client.get(
+                    "/uapi/domestic-stock/v1/quotations/inquire-price",
+                    params=params,
+                    headers=self._headers(cfg, tr_id),
+                )
+            except httpx.TransportError as net_exc:
+                # 시세 조회도 멱등 — 일시적 전송 오류(Read/Connect timeout 등) 재시도.
+                last_err = f"{type(net_exc).__name__}: {net_exc}"
+                if attempt < max_retries:
+                    backoff = 1.0 * attempt
+                    log.warning(
+                        "시세 조회 네트워크 오류 (%s), %.1f초 대기 후 재시도 %d/%d: %s",
+                        code, backoff, attempt, max_retries, last_err,
+                    )
+                    time.sleep(backoff)
+                    continue
+                break
 
             body: dict[str, Any] | None
             try:
@@ -562,9 +579,10 @@ class KisClient:
                         "content-type": "application/json; charset=utf-8",
                     },
                 )
-            except (httpx.ReadTimeout, httpx.ConnectError, httpx.WriteTimeout,
-                    httpx.RemoteProtocolError, httpx.PoolTimeout) as exc:
+            except httpx.TransportError as exc:
                 # 네트워크 단계 실패 — 서버엔 접수됐을 가능성 있음. 재확인 가드.
+                # TransportError 로 ConnectTimeout 까지 포괄 (좁게 잡으면 IPv6 블랙홀
+                # connect 멈춤이 가드를 건너뛰고 crash). 가드는 재전송 없이 조회만 함.
                 return _idempotent_recheck(f"네트워크 오류: {type(exc).__name__}: {exc}")
 
             try:
@@ -654,18 +672,17 @@ class KisClient:
                     params=params,
                     headers=self._headers(cfg, tr_id),
                 )
-            except (
-                httpx.ReadTimeout,
-                httpx.ConnectError,
-                httpx.WriteTimeout,
-                httpx.RemoteProtocolError,
-            ) as net_exc:
-                last_err = f"network={net_exc}"
+            except httpx.TransportError as net_exc:
+                # 잔고 조회는 멱등(GET)이라 모든 일시적 전송 오류를 재시도해도 안전.
+                # TransportError 가 ReadTimeout/ConnectTimeout/PoolTimeout/ReadError/
+                # RemoteProtocolError 등을 모두 포괄 — 좁게 잡으면 ConnectTimeout
+                # (IPv6 블랙홀 시그니처) 같은 게 retry 없이 사이클을 중단시킴.
+                last_err = f"{type(net_exc).__name__}: {net_exc}"
                 if attempt < max_retries:
                     wait = attempt * 1.5
                     log.warning(
                         "잔고 조회 네트워크 오류, %.1fs 대기 후 재시도 %d/%d: %s",
-                        wait, attempt, max_retries, net_exc,
+                        wait, attempt, max_retries, last_err,
                     )
                     time.sleep(wait)
                     continue
