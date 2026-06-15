@@ -110,8 +110,12 @@ PYTHONPATH=. .venv/bin/python scripts/stage10_verify.py # 펀더멘털 연동
   계속 대기 (손절/청산이라 강제 취소 안 함).
 
 - **LLM 프롬프트 캐싱 (ephemeral).** `signals/llm.py` 의 system 프롬프트 + tool 정의에
-  `cache_control` 태그. 연속 호출 시 입력 비용 최대 90% 절감. 최소 캐시 블록(1024 토큰)
-  미달 시 정상 과금으로 조용히 폴백.
+  `cache_control` 태그. 연속 호출 시 입력 비용 최대 90% 절감. **최소 캐시 블록은 모델별로
+  다름** — Opus/Sonnet 4.x = 1024 토큰, **Haiku 4.5/3.5/3 = 2048 토큰**. 현재 정적
+  prefix(system+tools)는 약 1380 토큰이라 **Haiku 에서는 캐싱이 안 켜지고**(2048 미달)
+  Anthropic 이 조용히 정상 과금으로 폴백 → 대시보드에 캐시 사용량 0 으로 찍힘 (버그 아님).
+  Sonnet/Opus 로 전환하면 1380 > 1024 라 자동으로 캐싱이 켜진다. 캐싱을 강제로 켜려고
+  prefix 를 패딩하면 cache-creation(1.25x) 과금이 늘어 Haiku 단가에선 오히려 손해.
 
 - **LLM side_hint 미전달.** prefilter 가 buy/sell 방향을 결정해도 LLM 에는 알리지 않음
   (확증 편향 제거). 대신 prefilter side 와 LLM decision 교차검증해서 불일치 시 reject.

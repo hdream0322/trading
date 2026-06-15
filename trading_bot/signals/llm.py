@@ -161,8 +161,11 @@ class ClaudeSignalClient:
 
         # 프롬프트 캐싱 — system 과 tool 정의는 매 호출 동일하므로 ephemeral 캐시 태그.
         # 동일 시스템 프롬프트·도구 정의를 연속 호출할 때 캐시 히트 → 입력 비용 약 90% 절감.
-        # 주의: Haiku/Sonnet 최소 캐시 블록은 1024 토큰. 시스템 프롬프트가 짧아
-        # 기준 미달이면 Anthropic 이 조용히 정상 과금으로 폴백 (에러 없음).
+        # 주의: 최소 캐시 블록은 모델마다 다름 — Opus/Sonnet 4.x = 1024 토큰,
+        # Haiku 4.5/3.5/3 = 2048 토큰. 현재 정적 prefix(system+tools)는 약 1380 토큰이라
+        # Haiku(2048 문턱)에서는 기준 미달로 캐싱이 안 켜지고 Anthropic 이 조용히 정상
+        # 과금으로 폴백한다 (에러 없음 → 대시보드에 캐시 사용량 0). 이 태그는 무해하며,
+        # Sonnet/Opus(1024 문턱) 로 전환하면 1380 > 1024 라 자동으로 캐싱이 켜진다.
         resp = self.client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
